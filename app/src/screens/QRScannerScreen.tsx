@@ -6,7 +6,6 @@ import {
   StyleSheet,
   Linking,
   Alert,
-  AppState,
   ActivityIndicator,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -26,25 +25,41 @@ export function QRScannerScreen({ username, onClose, onSuccess }: Props) {
   const scannedAtRef = useRef<number>(0);
 
   // 全フックを早期 return より前に宣言（Rules of Hooks）
+  // Credential Manager はボトムシートのためAppState が変わらない
+  // → setInterval で定期ポーリングする
   useEffect(() => {
     if (!waiting) return;
-    const subscription = AppState.addEventListener('change', async (nextState) => {
-      if (nextState !== 'active') return;
+
+    const timer = setInterval(async () => {
       try {
         const res = await fetch(
           `${BASE_URL}/authentication/status?username=${encodeURIComponent(username)}&since=${scannedAtRef.current}`
         );
         const { authenticated } = await res.json();
         if (authenticated) {
+          clearInterval(timer);
           setWaiting(false);
           onSuccess();
         }
       } catch {
-        // ネットワークエラーは無視して待機継続
+        // ネットワークエラーは無視して継続
       }
-    });
-    return () => subscription.remove();
-  }, [waiting, username, onSuccess]);
+    }, 1000);
+
+    // 60 秒でタイムアウト
+    const timeout = setTimeout(() => {
+      clearInterval(timer);
+      setWaiting(false);
+      Alert.alert('タイムアウト', '認証がタイムアウトしました', [
+        { text: 'OK', onPress: onClose },
+      ]);
+    }, 60000);
+
+    return () => {
+      clearInterval(timer);
+      clearTimeout(timeout);
+    };
+  }, [waiting, username, onSuccess, onClose]);
 
   const handleBarcodeScanned = useCallback(({ data }: { data: string }) => {
     if (scanned) return;
