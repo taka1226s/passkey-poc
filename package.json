@@ -1,0 +1,19 @@
+{
+  "name": "passkey-poc",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "concurrently --names \"tunnel,server,expo\" --prefix-colors \"cyan,green,yellow\" \"npm run tunnel\" \"npm run server\" \"npm run expo\"",
+    "tunnel": "cloudflared tunnel --url http://localhost:3000",
+    "server": "npm --prefix server run dev",
+    "expo": "npm --prefix app start"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}
