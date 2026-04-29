@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -7,72 +7,18 @@ import {
   ActivityIndicator,
   StyleSheet,
   Platform,
-  Linking,
 } from 'react-native';
 import { usePasskey } from '../hooks/usePasskey';
 import { QRScannerScreen } from './QRScannerScreen';
 
 const BASE_URL = 'http://localhost:3000';
 
-function useFidoDeepLink(onFidoUrl: (url: string) => void) {
-  useEffect(() => {
-    // アプリ起動時に FIDO:// URI で開かれた場合
-    Linking.getInitialURL().then((url) => {
-      if (url && url.toUpperCase().startsWith('FIDO:/')) {
-        onFidoUrl(url);
-      }
-    });
-    // アプリがフォアグラウンドにある状態で FIDO:// URI を受け取った場合
-    const subscription = Linking.addEventListener('url', ({ url }) => {
-      if (url.toUpperCase().startsWith('FIDO:/')) {
-        onFidoUrl(url);
-      }
-    });
-    return () => subscription.remove();
-  }, [onFidoUrl]);
-}
-
 export function HomeScreen() {
   const [username, setUsername] = useState('');
   const [showScanner, setShowScanner] = useState(false);
-  const [pendingFidoUrl, setPendingFidoUrl] = useState<string | null>(null);
   const { register, authenticate, loading, status } = usePasskey(BASE_URL);
 
   const isAndroid = Platform.OS === 'android';
-
-  const handleFidoUrl = React.useCallback((url: string) => {
-    setPendingFidoUrl(url);
-  }, []);
-
-  useFidoDeepLink(handleFidoUrl);
-
-  // FIDO:// URI 受け取り時：確認画面を表示して Credential Manager へ引き渡す
-  if (pendingFidoUrl) {
-    return (
-      <View style={styles.container}>
-        <Text style={styles.title}>クロスデバイス認証</Text>
-        <Text style={styles.subtitle}>
-          別のデバイスからパスキー認証のリクエストを受け取りました
-        </Text>
-        <TouchableOpacity
-          style={[styles.button, styles.primaryButton]}
-          onPress={() => {
-            const url = pendingFidoUrl;
-            setPendingFidoUrl(null);
-            Linking.openURL(url);
-          }}
-        >
-          <Text style={styles.buttonText}>生体認証で続ける</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.button, styles.cancelButton]}
-          onPress={() => setPendingFidoUrl(null)}
-        >
-          <Text style={styles.cancelText}>キャンセル</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
 
   if (showScanner) {
     return <QRScannerScreen onClose={() => setShowScanner(false)} />;
@@ -190,17 +136,6 @@ const styles = StyleSheet.create({
   },
   crossDeviceButton: {
     backgroundColor: '#5856D6',
-  },
-  cancelButton: {
-    width: '100%',
-    padding: 14,
-    borderRadius: 8,
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  cancelText: {
-    color: '#666',
-    fontSize: 16,
   },
   disabled: {
     opacity: 0.5,
