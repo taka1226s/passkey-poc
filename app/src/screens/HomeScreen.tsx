@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { usePasskey } from '../hooks/usePasskey';
 
-const BASE_URL = 'https://easier-red-bold-glossary.trycloudflare.com';
+const BASE_URL = 'http://localhost:3000';
 
 export function HomeScreen() {
   const [username, setUsername] = useState('');

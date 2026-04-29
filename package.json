@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "concurrently --names \"tunnel,server,expo\" --prefix-colors \"cyan,green,yellow\" \"npm run tunnel\" \"npm run server\" \"npm run expo\"",
+    "dev": "adb reverse tcp:3000 tcp:3000 && concurrently --names \"tunnel,server,expo\" --prefix-colors \"cyan,green,yellow\" \"npm run tunnel\" \"npm run server\" \"npm run expo\"",
     "tunnel": "cloudflared tunnel --url http://localhost:3000",
     "server": "npm --prefix server run dev",
     "expo": "npm --prefix app start"
