@@ -38,4 +38,4 @@ yarn-error.*
 
 # generated native folders
 /ios
-/android
+# /android は PoC のカスタム設定を含むため追跡対象
