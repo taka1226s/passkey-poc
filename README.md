@@ -128,8 +128,6 @@ URL が発行されると以下のバナーが表示されます。
 
 ### AC-3：クロスデバイス認証（PC ブラウザ + Android）
 
-> Bluetooth を両デバイスでオンにしてください。
-
 1. PC の Chrome でバナーに表示された URL を開く
 2. AC-1 で登録したユーザー名を入力して「パスキーでサインイン」をクリック
 3. ブラウザに QR コードが表示される
@@ -188,6 +186,43 @@ android:apk-key-hash:<Base64URL-encoded-SHA256>
 | キーストア | `app/android/app/debug.keystore` |
 | SHA-256 | `FA:C6:17:...:3B:9C` |
 | Base64URL | `-sYXRdwJA3hvue3mKpYrOZ9zSPC7b4mbgzJmdZEDO5w` |
+
+---
+
+## CTAP2 Hybrid における BLE の挙動
+
+### 仕様上の役割
+
+CTAP2 Hybrid（caBLE）では BLE は**近接確認（Proximity Verification）**に使用されます。QR コードをスキャンした端末が物理的に近くにいることを暗号的に保証し、中間者攻撃（MITM）を防ぐことが目的です。
+
+### 実際の通信経路
+
+認証データの転送は BLE ではなく **Google の中継サーバー経由の HTTPS** で行われます。
+
+```
+Chrome ─── HTTPS ──→ Google Tunnel Server ←── HTTPS ─── Android
+                     （caBLE relay）
+           BLE（近接確認のみ・任意）
+```
+
+### 検証結果
+
+Android の Bluetooth をオフにした状態で QR コードをスキャンすると、BLE の有効化を求めるプロンプトが表示されます。これを**拒否しても認証が成功**することを確認しました。
+
+Google の実装では BLE は任意であり、拒否した場合は Cloud Tunnel のみで認証が完了します。
+
+| BLE の状態 | 動作 | 近接確認 |
+|-----------|------|---------|
+| ON | Cloud Tunnel + BLE 近接確認 | あり |
+| OFF（拒否） | Cloud Tunnel のみ | **なし** |
+
+### BLE を必須化できるか
+
+**WebAuthn 仕様および現在の Google 実装では、RP（サーバー側）から BLE を必須にする手段はありません。**
+
+WebAuthn のレスポンスには BLE が使われたかどうかの情報が含まれないため、サーバーは判断できません。BLE の強制は Chrome と Android Credential Manager の実装に委ねられており、現状 Google はこれを任意としています。
+
+本番プロダクトでクロスデバイス認証を採用する場合、BLE 近接確認はベストエフォートであり保証されないことを設計に織り込む必要があります。
 
 ---
 
