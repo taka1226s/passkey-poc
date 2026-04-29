@@ -1,0 +1,68 @@
+{
+  "name": "app",
+  "version": "1.0.0",
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "web": "expo start --web",
+    "test": "jest",
+    "test:coverage": "jest --coverage"
+  },
+  "dependencies": {
+    "@simplewebauthn/browser": "^13.3.0",
+    "expo": "~54.0.33",
+    "expo-status-bar": "~3.0.9",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "react-native-passkey": "^3.3.3",
+    "react-native-safe-area-context": "~5.6.0"
+  },
+  "devDependencies": {
+    "@testing-library/jest-native": "^5.4.3",
+    "@testing-library/react-native": "^13.3.3",
+    "@types/jest": "^30.0.0",
+    "@types/react": "~19.1.0",
+    "jest": "^30.3.0",
+    "jest-expo": "^54.0.17",
+    "react-test-renderer": "^19.1.0",
+    "ts-jest": "^29.4.9",
+    "typescript": "~5.9.2"
+  },
+  "private": true,
+  "jest": {
+    "projects": [
+      {
+        "displayName": "logic",
+        "testEnvironment": "node",
+        "testMatch": [
+          "<rootDir>/src/api/**/*.test.ts",
+          "<rootDir>/src/hooks/**/*.test.ts"
+        ],
+        "transform": {
+          "^.+\\.tsx?$": [
+            "ts-jest",
+            {
+              "tsconfig": "tsconfig.json"
+            }
+          ]
+        }
+      },
+      {
+        "displayName": "ui",
+        "preset": "jest-expo",
+        "testMatch": [
+          "<rootDir>/src/screens/**/*.test.tsx"
+        ],
+        "transformIgnorePatterns": [
+          "node_modules/(?!((jest-)?react-native|@react-native(-community)?)|expo(nent)?|@expo(nent)?/.*|react-native-passkey)"
+        ],
+        "moduleNameMapper": {
+          "^expo/src/winter/ImportMetaRegistry$": "<rootDir>/__mocks__/expo-winter.js",
+          "^expo/src/winter/runtime.native$": "<rootDir>/__mocks__/expo-winter.js"
+        }
+      }
+    ]
+  }
+}
