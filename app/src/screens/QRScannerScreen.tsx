@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -25,25 +25,7 @@ export function QRScannerScreen({ username, onClose, onSuccess }: Props) {
   const [waiting, setWaiting] = useState(false);
   const scannedAtRef = useRef<number>(0);
 
-  if (!permission) {
-    return <View style={styles.container} />;
-  }
-
-  if (!permission.granted) {
-    return (
-      <View style={styles.container}>
-        <Text style={styles.message}>カメラへのアクセスが必要です</Text>
-        <TouchableOpacity style={styles.button} onPress={requestPermission}>
-          <Text style={styles.buttonText}>許可する</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={[styles.button, styles.cancelButton]} onPress={onClose}>
-          <Text style={styles.buttonText}>キャンセル</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
-
-  // アプリがフォアグラウンドに戻ったとき認証状態をポーリング
+  // 全フックを早期 return より前に宣言（Rules of Hooks）
   useEffect(() => {
     if (!waiting) return;
     const subscription = AppState.addEventListener('change', async (nextState) => {
@@ -62,9 +44,9 @@ export function QRScannerScreen({ username, onClose, onSuccess }: Props) {
       }
     });
     return () => subscription.remove();
-  }, [waiting, onSuccess]);
+  }, [waiting, username, onSuccess]);
 
-  const handleBarcodeScanned = ({ data }: { data: string }) => {
+  const handleBarcodeScanned = useCallback(({ data }: { data: string }) => {
     if (scanned) return;
     if (!data.toUpperCase().startsWith('FIDO:/')) {
       Alert.alert('エラー', 'パスキーの QR コードではありません', [
@@ -81,7 +63,26 @@ export function QRScannerScreen({ username, onClose, onSuccess }: Props) {
       ]);
     });
     setWaiting(true);
-  };
+  }, [scanned]);
+
+  // 早期 return はフックの後
+  if (!permission) {
+    return <View style={styles.container} />;
+  }
+
+  if (!permission.granted) {
+    return (
+      <View style={styles.container}>
+        <Text style={styles.message}>カメラへのアクセスが必要です</Text>
+        <TouchableOpacity style={styles.button} onPress={requestPermission}>
+          <Text style={styles.buttonText}>許可する</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[styles.button, styles.cancelButton]} onPress={onClose}>
+          <Text style={styles.buttonText}>キャンセル</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
   if (waiting) {
     return (
