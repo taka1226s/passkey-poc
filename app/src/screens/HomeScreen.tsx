@@ -9,14 +9,20 @@ import {
   Platform,
 } from 'react-native';
 import { usePasskey } from '../hooks/usePasskey';
+import { QRScannerScreen } from './QRScannerScreen';
 
 const BASE_URL = 'http://localhost:3000';
 
 export function HomeScreen() {
   const [username, setUsername] = useState('');
+  const [showScanner, setShowScanner] = useState(false);
   const { register, authenticate, loading, status } = usePasskey(BASE_URL);
 
   const isAndroid = Platform.OS === 'android';
+
+  if (showScanner) {
+    return <QRScannerScreen onClose={() => setShowScanner(false)} />;
+  }
 
   return (
     <View style={styles.container}>
@@ -59,6 +65,14 @@ export function HomeScreen() {
         ) : (
           <Text style={styles.buttonText}>パスキーでサインイン</Text>
         )}
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={[styles.button, styles.crossDeviceButton, loading && styles.disabled]}
+        onPress={() => setShowScanner(true)}
+        disabled={loading}
+      >
+        <Text style={styles.buttonText}>QR でサインイン（別デバイス）</Text>
       </TouchableOpacity>
 
       {status.type !== 'idle' && (
@@ -119,6 +133,9 @@ const styles = StyleSheet.create({
   },
   secondaryButton: {
     backgroundColor: '#34C759',
+  },
+  crossDeviceButton: {
+    backgroundColor: '#5856D6',
   },
   disabled: {
     opacity: 0.5,
