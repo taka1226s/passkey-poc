@@ -10,8 +10,18 @@ const TUNNEL_URL_PATTERN = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/;
 
 let serverProcess = null;
 
+function printBanner(url) {
+  const line = '─'.repeat(60);
+  console.log(`\n\x1b[36m${line}\x1b[0m`);
+  console.log(`\x1b[1m  AC-3 クロスデバイス認証テスト URL\x1b[0m`);
+  console.log(`  \x1b[4m\x1b[36m${url}\x1b[0m`);
+  console.log(`\x1b[36m${line}\x1b[0m\n`);
+}
+
 function startServer(rpid) {
-  console.log(`\n[server] RPID=${rpid} で起動します\n`);
+  const url = `https://${rpid}`;
+  printBanner(url);
+  console.log(`[server] RPID=${rpid} で起動します\n`);
   serverProcess = spawn('npm', ['run', 'dev'], {
     cwd: SERVER_DIR,
     env: { ...process.env, RPID: rpid },
