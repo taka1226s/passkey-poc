@@ -228,6 +228,83 @@ graph TB
 
 ---
 
+## コンポーネント詳解
+
+### Credential Manager
+
+Android OS に組み込まれた**認証情報の統合管理レイヤー**です（Google Play Services が実装）。
+
+#### 主な責務
+
+| 機能 | 内容 |
+|------|------|
+| **鍵ペア生成** | 登録時に公開鍵・秘密鍵を生成。秘密鍵は Secure Enclave（TEE / StrongBox）に保管し、アプリからは取り出せない |
+| **生体認証との連携** | 指紋・顔認証を UI として提供。認証成功時のみ秘密鍵の使用を許可 |
+| **RPID 検証** | `assetlinks.json` を取得し「このアプリがこの RPID に対してパスキーを使う権限がある」かを確認 |
+| **署名** | 認証時にチャレンジを秘密鍵で署名し、サーバーに返す |
+| **パスキーの保管・同期** | Google アカウントを通じてクラウドバックアップ・複数デバイス間で同期 |
+| **FIDO:// URI の排他処理** | CTAP2 Hybrid の QR を受け取り、caBLE プロトコルでクロスデバイス認証を担う |
+
+#### なぜアプリが直接鍵を扱わないのか
+
+```
+アプリ（React Native）
+    ↓ options を渡すだけ
+Credential Manager API
+    ↓ 内部で完結
+Secure Enclave（ハードウェア）
+    秘密鍵は外に出ない
+```
+
+秘密鍵がアプリプロセスに渡らないため、アプリが侵害されても秘密鍵は漏洩しません。これがパスキーの本質的な強度の一つです。
+
+---
+
+### Google Tunnel Server（caBLE relay）
+
+PC Chrome と Android の間を繋ぐ**暗号化中継サーバー**です（Google が運営）。
+
+#### なぜ中継サーバーが必要か
+
+PC と Android は**直接通信できない**ためです。
+
+```
+PC Chrome ──── インターネット ────→ ???  ←──── Android（NAT の内側）
+```
+
+Android はモバイルネットワーク・Wi-Fi の NAT 内側にいるため、PC から直接到達できません。Google Tunnel Server がその橋渡しをします。
+
+#### 通信の仕組み
+
+```
+PC Chrome ──HTTPS──→ Google Tunnel Server ←──HTTPS── Android Credential Manager
+                     （両者がサーバーへ接続することで NAT を越える）
+```
+
+#### セキュリティ上の設計
+
+Google Tunnel Server は中継しますが、**中身は読めません**。
+
+| 項目 | 内容 |
+|------|------|
+| **E2E 暗号化** | QR コードに埋め込まれた一時鍵で端末間を暗号化。Google も復号不可 |
+| **セッション識別** | QR 生成時に発行されたセッション ID で PC と Android を対応付け |
+| **BLE との関係** | BLE は「QR をスキャンした端末が物理的に近くにいる」ことを近接確認するためのオプション。データ転送はすべて Tunnel Server 経由 |
+
+#### RP（サーバー）から見た位置づけ
+
+Credential Manager・Google Tunnel Server はどちらも WebAuthn 仕様には直接登場せず、**CTAP2 Hybrid（caBLE）プロトコルのレイヤー**で動作します。RP サーバーは「どのルートで署名が届いたか」を関知せず、「有効な署名かどうか」だけを検証します。
+
+```
+Credential Manager    = Android 側のパスキー実行エンジン
+                        （鍵生成・保管・署名・生体認証・FIDO 処理を一手に担う）
+
+Google Tunnel Server  = PC と Android を繋ぐ暗号化中継
+                        （NAT 越えを解決、中身は E2E 暗号化で Google も不可視）
+```
+
+---
+
 ## 構成
 
 ```
