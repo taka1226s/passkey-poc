@@ -223,6 +223,10 @@ app.get('/', (_req, res) => {
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ username }),
       }).then(r => r.json());
+      // CTAP2 Hybrid（QRコード）のみに限定
+      if (opts.allowCredentials) {
+        opts.allowCredentials = opts.allowCredentials.map(c => ({ ...c, transports: ['hybrid'] }));
+      }
       const credential = await startAuthentication({ optionsJSON: opts });
       const result = await fetch('/authentication/complete', {
         method: 'POST',
