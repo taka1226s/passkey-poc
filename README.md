@@ -12,6 +12,145 @@ Android 実機でパスキー（FIDO2/WebAuthn）認証を検証するための 
 
 ---
 
+## シーケンス図
+
+### AC-1：パスキー登録フロー
+
+```mermaid
+sequenceDiagram
+    actor User as ユーザー
+    participant App as Android アプリ
+    participant CM as Credential Manager<br/>(Google Play Services)
+    participant Server as Express サーバー
+
+    User->>App: ユーザー名入力 → 「パスキーを登録」タップ
+    App->>Server: POST /registration/begin { username }
+    Server-->>App: options<br/>{ challenge, rpID, userName, ... }
+    App->>CM: Passkey.register(options)
+    CM->>User: 生体認証プロンプト（指紋 / 顔認証）
+    User-->>CM: 認証
+    CM-->>App: RegistrationResponseJSON<br/>{ id, response, type }
+    App->>Server: POST /registration/complete { username, credential }
+    Server->>Server: verifyRegistrationResponse()<br/>origin / challenge / rpID 検証
+    Server-->>App: { verified: true }
+    App-->>User: 「登録が完了しました」
+```
+
+### AC-2：同一デバイス認証フロー
+
+```mermaid
+sequenceDiagram
+    actor User as ユーザー
+    participant App as Android アプリ
+    participant CM as Credential Manager<br/>(Google Play Services)
+    participant Server as Express サーバー
+
+    User->>App: ユーザー名入力 → 「パスキーでサインイン」タップ
+    App->>Server: POST /authentication/begin { username }
+    Server-->>App: options<br/>{ challenge, allowCredentials, rpID, ... }
+    App->>CM: Passkey.authenticate(options)
+    CM->>User: 生体認証プロンプト
+    User-->>CM: 認証
+    CM-->>App: AuthenticationResponseJSON<br/>{ id, response, type }
+    App->>Server: POST /authentication/complete { username, credential }
+    Server->>Server: verifyAuthenticationResponse()<br/>署名検証 / カウンター更新
+    Server-->>App: { verified: true }
+    App-->>User: 「認証が完了しました」
+```
+
+### AC-3：クロスデバイス認証フロー（CTAP2 Hybrid）
+
+```mermaid
+sequenceDiagram
+    actor User as ユーザー
+    participant Browser as PC Chrome
+    participant Server as Express サーバー
+    participant GTS as Google Tunnel Server<br/>(caBLE relay)
+    participant CM as Android<br/>Credential Manager
+
+    User->>Browser: URL を開き ユーザー名入力 → 「パスキーでサインイン」
+    Browser->>Server: POST /authentication/begin { username }
+    Server-->>Browser: options { allowCredentials: [{transports:["hybrid"]}], ... }
+    Browser->>Browser: startAuthentication()<br/>transport=hybrid のみ → QR コード生成
+    Browser-->>User: QR コード表示
+
+    User->>CM: カメラで FIDO:// QR をスキャン
+    CM->>GTS: caBLE ハンドシェイク（HTTPS）
+    GTS->>Browser: トンネル確立通知
+    CM->>User: 生体認証プロンプト
+    User-->>CM: 認証
+    CM->>GTS: 署名済みクレデンシャル（HTTPS）
+    GTS-->>Browser: クレデンシャル転送
+
+    Browser->>Server: POST /authentication/complete { username, credential }
+    Server->>Server: verifyAuthenticationResponse()
+    Server-->>Browser: { verified: true }
+    Browser-->>User: 認証完了表示
+```
+
+### AC-3（アプリ内 QR スキャナー経由）
+
+```mermaid
+sequenceDiagram
+    actor User as ユーザー
+    participant App as Android アプリ
+    participant CM as Credential Manager
+    participant GTS as Google Tunnel Server
+    participant Browser as PC Chrome
+    participant Server as Express サーバー
+
+    User->>App: ユーザー名入力 → 「QR でサインイン」タップ
+    App->>App: CameraView 起動（QR スキャン待機）
+    User->>App: PC ブラウザの QR コードをスキャン
+    App->>CM: Linking.openURL("FIDO://...")
+    App->>Server: GET /authentication/status?username=X&since=T<br/>（1 秒間隔でポーリング開始）
+
+    CM->>GTS: caBLE ハンドシェイク
+    CM->>User: 生体認証プロンプト
+    User-->>CM: 認証
+    CM->>GTS: 署名済みクレデンシャル
+    GTS-->>Browser: クレデンシャル転送
+    Browser->>Server: POST /authentication/complete { username, credential }
+    Server->>Server: recordAuthentication()<br/>lastAuthenticatedAt 記録
+    Server-->>Browser: { verified: true }
+
+    App->>Server: GET /authentication/status（ポーリング）
+    Server-->>App: { authenticated: true }
+    App-->>User: 「クロスデバイス認証が完了しました」
+```
+
+### システム構成図
+
+```mermaid
+graph TB
+    subgraph Android["Android 実機"]
+        App["React Native アプリ<br/>(Expo bare)"]
+        CM["Credential Manager<br/>(Google Play Services)"]
+    end
+
+    subgraph Mac["Mac（開発機）"]
+        Server["Express サーバー :3000<br/>(@simplewebauthn/server)"]
+        CF["cloudflared<br/>(Cloudflare Quick Tunnel)"]
+    end
+
+    subgraph Internet["インターネット"]
+        CFEdge["Cloudflare Edge<br/>https://xxxx.trycloudflare.com"]
+        GTS["Google Tunnel Server<br/>(caBLE relay)"]
+    end
+
+    Browser["PC Chrome"]
+
+    App -- "HTTP localhost:3000<br/>(adb reverse)" --> Server
+    Server -- "HTTPS tunnel" --> CF
+    CF -- "管理" --> CFEdge
+    CFEdge -- "assetlinks.json / 認証API" --> Browser
+    CM -- "HTTPS" --> GTS
+    GTS -- "HTTPS" --> Browser
+    Browser -- "HTTPS" --> CFEdge
+```
+
+---
+
 ## 構成
 
 ```
