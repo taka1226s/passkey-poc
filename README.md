@@ -23,16 +23,34 @@ sequenceDiagram
     participant CM as Credential Manager<br/>(Google Play Services)
     participant Server as Express サーバー
 
+    Note over Server: RPID = Cloudflare URL<br/>RP Name = "Passkey PoC"
+
     User->>App: ユーザー名入力 → 「パスキーを登録」タップ
-    App->>Server: POST /registration/begin { username }
-    Server-->>App: options<br/>{ challenge, rpID, userName, ... }
-    App->>CM: Passkey.register(options)
-    CM->>User: 生体認証プロンプト（指紋 / 顔認証）
-    User-->>CM: 認証
-    CM-->>App: RegistrationResponseJSON<br/>{ id, response, type }
-    App->>Server: POST /registration/complete { username, credential }
-    Server->>Server: verifyRegistrationResponse()<br/>origin / challenge / rpID 検証
-    Server-->>App: { verified: true }
+
+    rect rgb(220, 235, 255)
+        Note over App,Server: ① チャレンジ取得
+        App->>Server: POST /registration/begin { username }
+        Note over Server: ユーザー作成 or 取得<br/>ランダムチャレンジ生成<br/>セッションに保存
+        Server-->>App: options { challenge, rpID,<br/>userName, userID,<br/>authenticatorSelection }
+    end
+
+    rect rgb(220, 255, 220)
+        Note over App,CM: ② デバイス上での鍵生成
+        App->>CM: Passkey.register(options)
+        Note over CM: options を Credential Manager API に渡す<br/>rpID の assetlinks.json を検証<br/>（https://rpID/.well-known/assetlinks.json）
+        CM->>User: 生体認証プロンプト（指紋 / 顔認証）
+        User-->>CM: 認証
+        Note over CM: 公開鍵 / 秘密鍵ペアを生成<br/>秘密鍵は Secure Enclave に保管<br/>公開鍵をレスポンスに含める<br/>origin = android:apk-key-hash:<hash>
+        CM-->>App: RegistrationResponseJSON<br/>{ id, rawId, response:<br/>{ attestationObject, clientDataJSON,<br/>  transports }, type }
+    end
+
+    rect rgb(255, 245, 220)
+        Note over App,Server: ③ サーバー側検証・保存
+        App->>Server: POST /registration/complete<br/>{ username, credential }
+        Note over Server: clientDataJSON の challenge 照合<br/>origin 検証（android:apk-key-hash）<br/>rpID 検証<br/>公開鍵・カウンターを DB 保存
+        Server-->>App: { verified: true }
+    end
+
     App-->>User: 「登録が完了しました」
 ```
 
@@ -46,15 +64,31 @@ sequenceDiagram
     participant Server as Express サーバー
 
     User->>App: ユーザー名入力 → 「パスキーでサインイン」タップ
-    App->>Server: POST /authentication/begin { username }
-    Server-->>App: options<br/>{ challenge, allowCredentials, rpID, ... }
-    App->>CM: Passkey.authenticate(options)
-    CM->>User: 生体認証プロンプト
-    User-->>CM: 認証
-    CM-->>App: AuthenticationResponseJSON<br/>{ id, response, type }
-    App->>Server: POST /authentication/complete { username, credential }
-    Server->>Server: verifyAuthenticationResponse()<br/>署名検証 / カウンター更新
-    Server-->>App: { verified: true }
+
+    rect rgb(220, 235, 255)
+        Note over App,Server: ① チャレンジ取得
+        App->>Server: POST /authentication/begin { username }
+        Note over Server: ユーザー存在確認<br/>ランダムチャレンジ生成<br/>登録済みクレデンシャル ID 一覧を返す
+        Server-->>App: options { challenge, rpID,<br/>allowCredentials: [{ id, transports }],<br/>userVerification: "required" }
+    end
+
+    rect rgb(220, 255, 220)
+        Note over App,CM: ② デバイス上での署名
+        App->>CM: Passkey.authenticate(options)
+        Note over CM: allowCredentials の中から<br/>デバイス上の秘密鍵を検索<br/>rpID の検証
+        CM->>User: 生体認証プロンプト
+        User-->>CM: 認証
+        Note over CM: 秘密鍵でチャレンジに署名<br/>authenticatorData（カウンター含む）を生成<br/>origin = android:apk-key-hash:<hash>
+        CM-->>App: AuthenticationResponseJSON<br/>{ id, response:<br/>{ authenticatorData, clientDataJSON,<br/>  signature, userHandle }, type }
+    end
+
+    rect rgb(255, 245, 220)
+        Note over App,Server: ③ サーバー側署名検証
+        App->>Server: POST /authentication/complete<br/>{ username, credential }
+        Note over Server: challenge 照合<br/>origin / rpID 検証<br/>保存済み公開鍵で署名を検証<br/>カウンター値の単調増加を確認（リプレイ攻撃防止）<br/>lastAuthenticatedAt を記録
+        Server-->>App: { verified: true }
+    end
+
     App-->>User: 「認証が完了しました」
 ```
 
@@ -68,24 +102,43 @@ sequenceDiagram
     participant GTS as Google Tunnel Server<br/>(caBLE relay)
     participant CM as Android<br/>Credential Manager
 
-    User->>Browser: URL を開き ユーザー名入力 → 「パスキーでサインイン」
-    Browser->>Server: POST /authentication/begin { username }
-    Server-->>Browser: options { allowCredentials: [{transports:["hybrid"]}], ... }
-    Browser->>Browser: startAuthentication()<br/>transport=hybrid のみ → QR コード生成
-    Browser-->>User: QR コード表示
+    User->>Browser: Cloudflare URL を開き<br/>ユーザー名入力 → 「パスキーでサインイン」
 
-    User->>CM: カメラで FIDO:// QR をスキャン
-    CM->>GTS: caBLE ハンドシェイク（HTTPS）
-    GTS->>Browser: トンネル確立通知
-    CM->>User: 生体認証プロンプト
-    User-->>CM: 認証
-    CM->>GTS: 署名済みクレデンシャル（HTTPS）
-    GTS-->>Browser: クレデンシャル転送
+    rect rgb(220, 235, 255)
+        Note over Browser,Server: ① チャレンジ取得（hybrid 限定）
+        Browser->>Server: POST /authentication/begin { username }
+        Note over Server: チャレンジ生成<br/>allowCredentials の transports を ["hybrid"] に限定<br/>→ platform 認証（Touch ID 等）を除外
+        Server-->>Browser: options { challenge,<br/>allowCredentials: [{ transports:["hybrid"] }] }
+    end
 
-    Browser->>Server: POST /authentication/complete { username, credential }
-    Server->>Server: verifyAuthenticationResponse()
-    Server-->>Browser: { verified: true }
-    Browser-->>User: 認証完了表示
+    rect rgb(220, 255, 220)
+        Note over Browser: ② QR コード生成
+        Browser->>Browser: startAuthentication({ optionsJSON })
+        Note over Browser: WebAuthn API が hybrid transport を検出<br/>・セッション用の一時鍵ペアを生成<br/>・トンネルサーバー URL + 公開鍵を QR に埋め込み<br/>・FIDO:// URI を QR コードとして表示
+        Browser-->>User: QR コード表示
+    end
+
+    rect rgb(255, 220, 220)
+        Note over User,CM: ③ Android 側スキャン・近接確認・署名
+        User->>CM: カメラで FIDO:// QR をスキャン
+        Note over CM: QR から トンネル URL・セッション公開鍵を取得<br/>BLE アドバタイズ（近接確認、任意）
+        CM->>GTS: caBLE ハンドシェイク（HTTPS）<br/>E2E 暗号化トンネル確立
+        GTS->>Browser: トンネル確立通知
+        CM->>User: 生体認証プロンプト
+        User-->>CM: 認証
+        Note over CM: 秘密鍵でチャレンジに署名<br/>origin = https://rpID（PC ブラウザのドメイン）
+        CM->>GTS: 署名済みクレデンシャル（E2E 暗号化）
+        GTS-->>Browser: クレデンシャル転送・復号
+    end
+
+    rect rgb(255, 245, 220)
+        Note over Browser,Server: ④ サーバー側検証
+        Browser->>Server: POST /authentication/complete<br/>{ username, credential }
+        Note over Server: challenge / origin / rpID 検証<br/>公開鍵で署名を検証<br/>カウンター確認
+        Server-->>Browser: { verified: true }
+    end
+
+    Browser-->>User: 認証完了表示（JSON レスポンス）
 ```
 
 ### AC-3（アプリ内 QR スキャナー経由）
@@ -99,24 +152,48 @@ sequenceDiagram
     participant Browser as PC Chrome
     participant Server as Express サーバー
 
-    User->>App: ユーザー名入力 → 「QR でサインイン」タップ
-    App->>App: CameraView 起動（QR スキャン待機）
-    User->>App: PC ブラウザの QR コードをスキャン
-    App->>CM: Linking.openURL("FIDO://...")
-    App->>Server: GET /authentication/status?username=X&since=T<br/>（1 秒間隔でポーリング開始）
+    Note over Browser,Server: 事前：PC ブラウザ側で QR を表示済み<br/>（AC-3 フローの ① ② 完了後）
 
-    CM->>GTS: caBLE ハンドシェイク
-    CM->>User: 生体認証プロンプト
-    User-->>CM: 認証
-    CM->>GTS: 署名済みクレデンシャル
-    GTS-->>Browser: クレデンシャル転送
-    Browser->>Server: POST /authentication/complete { username, credential }
-    Server->>Server: recordAuthentication()<br/>lastAuthenticatedAt 記録
-    Server-->>Browser: { verified: true }
+    rect rgb(220, 235, 255)
+        Note over User,App: ① アプリ内スキャン開始
+        User->>App: ユーザー名入力 → 「QR でサインイン」タップ
+        App->>App: CameraView 起動<br/>（expo-camera / QR スキャン待機）
+        User->>App: PC ブラウザの QR コードをスキャン
+        Note over App: FIDO:// URI を検出<br/>scannedAt = Date.now() を記録
+        App->>CM: Linking.openURL("FIDO://...")<br/>Credential Manager に URI を渡す
+    end
 
-    App->>Server: GET /authentication/status（ポーリング）
-    Server-->>App: { authenticated: true }
-    App-->>User: 「クロスデバイス認証が完了しました」
+    rect rgb(200, 220, 200)
+        Note over App,Server: ② ポーリング開始（並行）
+        App->>Server: GET /authentication/status<br/>?username=X&since=scannedAt<br/>（setInterval 1 秒間隔、60 秒タイムアウト）
+        Note over App: Credential Manager はボトムシート表示<br/>→ AppState は変化しないためポーリングで検知
+    end
+
+    rect rgb(255, 220, 220)
+        Note over CM,GTS: ③ caBLE 認証（AC-3 と同じフロー）
+        CM->>GTS: caBLE ハンドシェイク
+        CM->>User: 生体認証プロンプト
+        User-->>CM: 認証
+        Note over CM: 秘密鍵で署名
+        CM->>GTS: 署名済みクレデンシャル
+        GTS-->>Browser: クレデンシャル転送
+    end
+
+    rect rgb(255, 245, 220)
+        Note over Browser,Server: ④ PC ブラウザ → サーバー検証
+        Browser->>Server: POST /authentication/complete<br/>{ username, credential }
+        Note over Server: 署名検証・カウンター確認<br/>recordAuthentication()<br/>lastAuthenticatedAt = Date.now() を記録
+        Server-->>Browser: { verified: true }
+    end
+
+    rect rgb(235, 220, 255)
+        Note over App,Server: ⑤ ポーリングで完了検知
+        App->>Server: GET /authentication/status（次回ポーリング）
+        Note over Server: lastAuthenticatedAt > since → authenticated: true
+        Server-->>App: { authenticated: true }
+        Note over App: clearInterval / onSuccess() 呼び出し
+        App-->>User: 「クロスデバイス認証が完了しました」
+    end
 ```
 
 ### システム構成図
