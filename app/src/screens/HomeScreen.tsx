@@ -21,7 +21,16 @@ export function HomeScreen() {
   const isAndroid = Platform.OS === 'android';
 
   if (showScanner) {
-    return <QRScannerScreen onClose={() => setShowScanner(false)} />;
+    return (
+      <QRScannerScreen
+        username={username}
+        onClose={() => setShowScanner(false)}
+        onSuccess={() => {
+          setShowScanner(false);
+          setStatus({ type: 'success', message: 'クロスデバイス認証が完了しました' });
+        }}
+      />
+    );
   }
 
   return (

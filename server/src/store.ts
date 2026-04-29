@@ -5,6 +5,7 @@ export type UserRecord = {
   username: string;
   currentChallenge?: string;
   credentials: CredentialRecord[];
+  lastAuthenticatedAt?: number;
 };
 
 export type CredentialRecord = {
@@ -49,5 +50,14 @@ export const store = {
     if (!user) return;
     const cred = user.credentials.find((c) => c.id === credentialId);
     if (cred) cred.counter = counter;
+  },
+
+  recordAuthentication(username: string): void {
+    const user = users.get(username);
+    if (user) user.lastAuthenticatedAt = Date.now();
+  },
+
+  getLastAuthenticatedAt(username: string): number | undefined {
+    return users.get(username)?.lastAuthenticatedAt;
   },
 };

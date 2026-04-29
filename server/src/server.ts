@@ -198,10 +198,23 @@ app.post('/authentication/complete', async (req, res) => {
     }
 
     store.updateCounter(username, storedCred.id, verification.authenticationInfo.newCounter);
+    store.recordAuthentication(username);
     res.json({ verified: true });
   } catch (err) {
     res.status(400).json({ error: String(err) });
   }
+});
+
+app.get('/authentication/status', (req, res) => {
+  const { username, since } = req.query as { username?: string; since?: string };
+  if (!username) {
+    res.status(400).json({ error: 'username は必須です' });
+    return;
+  }
+  const lastAuthenticatedAt = store.getLastAuthenticatedAt(username);
+  const sinceMs = since ? parseInt(since, 10) : 0;
+  const authenticated = lastAuthenticatedAt !== undefined && lastAuthenticatedAt > sinceMs;
+  res.json({ authenticated, lastAuthenticatedAt });
 });
 
 // クロスデバイス認証（AC-3）用の簡易 HTML ページ

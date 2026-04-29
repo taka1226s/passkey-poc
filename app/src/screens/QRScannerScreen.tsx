@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -6,16 +6,24 @@ import {
   StyleSheet,
   Linking,
   Alert,
+  AppState,
+  ActivityIndicator,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 
+const BASE_URL = 'http://localhost:3000';
+
 type Props = {
+  username: string;
   onClose: () => void;
+  onSuccess: () => void;
 };
 
-export function QRScannerScreen({ onClose }: Props) {
+export function QRScannerScreen({ username, onClose, onSuccess }: Props) {
   const [permission, requestPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);
+  const [waiting, setWaiting] = useState(false);
+  const scannedAtRef = useRef<number>(0);
 
   if (!permission) {
     return <View style={styles.container} />;
@@ -35,6 +43,27 @@ export function QRScannerScreen({ onClose }: Props) {
     );
   }
 
+  // アプリがフォアグラウンドに戻ったとき認証状態をポーリング
+  useEffect(() => {
+    if (!waiting) return;
+    const subscription = AppState.addEventListener('change', async (nextState) => {
+      if (nextState !== 'active') return;
+      try {
+        const res = await fetch(
+          `${BASE_URL}/authentication/status?username=${encodeURIComponent(username)}&since=${scannedAtRef.current}`
+        );
+        const { authenticated } = await res.json();
+        if (authenticated) {
+          setWaiting(false);
+          onSuccess();
+        }
+      } catch {
+        // ネットワークエラーは無視して待機継続
+      }
+    });
+    return () => subscription.remove();
+  }, [waiting, onSuccess]);
+
   const handleBarcodeScanned = ({ data }: { data: string }) => {
     if (scanned) return;
     if (!data.toUpperCase().startsWith('FIDO:/')) {
@@ -45,13 +74,34 @@ export function QRScannerScreen({ onClose }: Props) {
       return;
     }
     setScanned(true);
+    scannedAtRef.current = Date.now();
     Linking.openURL(data).catch(() => {
       Alert.alert('エラー', 'QR コードを処理できませんでした', [
         { text: 'OK', onPress: () => setScanned(false) },
       ]);
     });
-    onClose();
+    setWaiting(true);
   };
+
+  if (waiting) {
+    return (
+      <View style={styles.container}>
+        <ActivityIndicator size="large" color="#fff" />
+        <Text style={[styles.message, { marginTop: 24 }]}>
+          生体認証を完了してください
+        </Text>
+        <Text style={[styles.message, { fontSize: 12, opacity: 0.7, marginTop: 8 }]}>
+          認証完了後、自動で画面が切り替わります
+        </Text>
+        <TouchableOpacity
+          style={[styles.cancelButton, { marginTop: 40 }]}
+          onPress={() => { setWaiting(false); onClose(); }}
+        >
+          <Text style={styles.buttonText}>キャンセル</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
