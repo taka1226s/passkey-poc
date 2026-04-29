@@ -581,6 +581,91 @@ Mac で認証完了
 
 ---
 
+## iOS 対応（参考）
+
+本 PoC は Android 向けですが、`react-native-passkey` は iOS もサポートしています。iOS で動作させる場合の差異を以下に示します。
+
+### Android と iOS の主な差異
+
+| 項目 | Android | iOS |
+|------|---------|-----|
+| 権限検証ファイル | `assetlinks.json` | `apple-app-site-association` |
+| Origin 形式 | `android:apk-key-hash:<hash>` | `https://<RPID>`（Web と同じ） |
+| 実機通信 | adb reverse（USB） | ローカル IP / Cloudflare URL |
+| シミュレーター通信 | - | localhost 直接アクセス可 |
+| ビルドコマンド | `npx expo run:android` | `npx expo run:ios` |
+| パスキー対応 OS | Android 9+ | iOS 16+ |
+| 開発者アカウント | 不要 | **Apple Developer アカウント必須** |
+| RPID の柔軟性 | 実行時に動的変更可 | **ビルド時固定（要再ビルド）** |
+
+### サーバー側の変更
+
+iOS の Credential（パスワードキー）マネージャーは `apple-app-site-association` で権限を検証します。サーバーに以下のエンドポイントを追加します。
+
+```typescript
+// .well-known/apple-app-site-association
+const IOS_BUNDLE_ID = process.env['IOS_BUNDLE_ID'] ?? 'com.example.passkeyPoc';
+const APPLE_TEAM_ID = process.env['APPLE_TEAM_ID'] ?? 'XXXXXXXXXX';
+
+app.get('/.well-known/apple-app-site-association', (_req, res) => {
+  res.json({
+    webcredentials: {
+      apps: [`${APPLE_TEAM_ID}.${IOS_BUNDLE_ID}`],
+    },
+  });
+});
+```
+
+iOS の Origin は `https://<RPID>` であり、現在の `ORIGIN_WEB` として既に `allowedOrigins()` に含まれています。**`android:apk-key-hash` の追加は不要です。**
+
+### アプリ側の変更
+
+`app.json` に `bundleIdentifier` と Associated Domains エンタイトルメントを追加します。
+
+```json
+"ios": {
+  "supportsTablet": true,
+  "bundleIdentifier": "com.example.passkeyPoc",
+  "associatedDomains": ["webcredentials:<RPID>"]
+}
+```
+
+### Cloudflare Quick Tunnel との相性問題
+
+Associated Domains はアプリのビルド時に埋め込まれるため、**起動のたびに URL が変わる Cloudflare Quick Tunnel と相性が悪い**という制約があります。
+
+| | Android | iOS |
+|---|---------|-----|
+| RPID の変更 | 実行時に `RPID` 環境変数で反映 | `associatedDomains` をビルドに含めるため URL 変更ごとに再ビルドが必要 |
+| Quick Tunnel との相性 | 問題なし | **再ビルドが必要で運用が煩雑** |
+
+iOS で検証する場合は以下のいずれかを推奨します。
+
+- **固定ドメイン**（ngrok 固定 URL、独自ドメイン等）を使用する
+- `app.config.js` で環境変数から `associatedDomains` を読み込み、起動前に再ビルドする
+
+### シミュレーターでの動作
+
+iOS シミュレーター（iOS 16+）はパスキーをサポートしており、Mac の `localhost:3000` に直接アクセスできます。
+
+```
+iOS シミュレーター → localhost:3000 → Mac の Express サーバー（adb reverse 不要）
+```
+
+実機の場合は adb reverse に相当する仕組みがないため、Mac のローカル IP（例：`http://192.168.x.x:3000`）または Cloudflare URL をアプリの `BASE_URL` として指定します。
+
+### AC-3（クロスデバイス）での iOS の挙動
+
+| ケース | 動作 |
+|--------|------|
+| PC Chrome → iOS をスキャン端末として使用 | CTAP2 Hybrid（QR コード）で動作。Android と同様 |
+| Mac Safari → 同一 Apple ID の iPhone | **Continuity**（QR コードなし・BLE + Wi-Fi 必須）で動作 |
+| iOS アプリ内 QR スキャナー | Android と同様のポーリング方式で動作可能 |
+
+Continuity は QR コードを使わないため QRLjacking が成立せず、Apple デバイス間では CTAP2 Hybrid より高いセキュリティが確保されます（詳細は[セキュリティ考察](#セキュリティ考察)参照）。
+
+---
+
 ## 注意事項
 
 - サーバーはインメモリストアを使用しているため、**再起動するとユーザーデータが消えます**。再起動後は AC-1 からやり直してください。
