@@ -23,8 +23,9 @@ Android / iOS 実機でパスキー（FIDO2/WebAuthn）認証を検証するた�
 passkey-poc/
 ├── app/          # React Native（Expo bare）アプリ
 ├── server/       # Express + @simplewebauthn/server
-└── scripts/
-    └── tunnel-server.js  # Cloudflare URL 自動検出 & サーバー起動スクリプト
+├── scripts/
+│   └── dev.js    # ngrok 起動 & サーバー / Metro 一括起動スクリプト
+└── .env          # RPID 等の環境変数（要作成）
 ```
 
 | 層 | 技術 |
@@ -33,8 +34,7 @@ passkey-poc/
 | パスキー操作 | react-native-passkey 3.3.3 |
 | サーバー | Node.js / Express 5 / TypeScript |
 | WebAuthn 検証 | @simplewebauthn/server 13 |
-| HTTPS トンネル（Android） | Cloudflare Quick Tunnel（cloudflared） |
-| HTTPS トンネル（iOS） | 固定ドメイン必須（ngrok 固定 URL 等） |
+| HTTPS トンネル | ngrok static domain（Android / iOS 共通・固定 URL）|
 
 ---
 
@@ -46,6 +46,30 @@ passkey-poc/
 
 - macOS（Apple Silicon / Intel）
 - Node.js 18 以上
+- ngrok アカウント（[ngrok.com](https://ngrok.com) で無料登録）
+
+**ngrok の初期設定（一回だけ）**
+
+```bash
+brew install ngrok/ngrok/ngrok
+
+# 認証トークンを設定
+ngrok config add-authtoken <YOUR_TOKEN>
+
+# ダッシュボードで無料 static domain を取得後、.env を作成
+cp .env.example .env
+# .env の RPID を取得した static domain に書き換える
+```
+
+**.env.example:**
+
+```
+RPID=your-name.ngrok-free.app
+APPLE_TEAM_ID=XXXXXXXXXX
+IOS_BUNDLE_ID=com.example.passkeyPoc
+```
+
+**依存パッケージのインストール:**
 
 ```bash
 npm install
@@ -59,7 +83,7 @@ cd app && npm install && cd ..
 - USB ケーブル（USB デバッグ有効）
 
 ```bash
-brew install cloudflared android-platform-tools
+brew install android-platform-tools
 brew install openjdk@17
 echo 'export PATH="/opt/homebrew/opt/openjdk@17/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
@@ -70,11 +94,6 @@ source ~/.zshrc
 - Xcode 14 以上
 - **Apple Developer アカウント**（Associated Domains エンタイトルメントに必要）
 - iOS 16 以上の実機 **またはシミュレーター**
-- 固定 HTTPS ドメイン（後述の RPID 制約を参照）
-
-```bash
-brew install ngrok   # 固定 URL 取得に使用
-```
 
 ### アプリビルド
 
@@ -86,24 +105,21 @@ cd app && npx expo run:android && cd ..
 
 > JS の変更は Metro の Hot Reload で反映されます。再ビルド不要。
 
-#### iOS
+#### iOS（初回のみ）
 
-iOS は `associatedDomains`（RPID）をビルド時に埋め込みます。**RPID が変わるたびに再ビルドが必要**です。
+`associatedDomains` に `.env` の `RPID` を埋め込んでビルドします。RPID は固定のため**以降は再ビルド不要**です。
 
 ```bash
-# 1. RPID を .env に設定してから
-echo "RPID=your-fixed-domain.ngrok.io" > .env
-
-# 2. ビルド（iOS シミュレーター）
+# シミュレーター
 cd app && npx expo run:ios && cd ..
 
-# 3. 実機の場合
+# 実機
 cd app && npx expo run:ios --device && cd ..
 ```
 
 ### 起動
 
-#### Android
+Android・iOS 共通の 1 コマンドです。
 
 ```bash
 npm run dev
@@ -113,36 +129,21 @@ npm run dev
 
 | プロセス | 内容 |
 |---------|------|
-| `adb reverse tcp:3000 tcp:3000` | Android → Mac の localhost をトンネル |
-| Cloudflare Quick Tunnel | 起動ごとに HTTPS 公開 URL を発行 |
-| Express サーバー | Cloudflare URL を RPID に自動セット |
+| `adb reverse tcp:3000 tcp:3000` | Android 実機 → Mac の localhost をトンネル |
+| ngrok（`.env` の RPID で起動） | 固定 HTTPS URL を発行（毎回同じ URL） |
+| Express サーバー | `.env` の RPID をセットして起動 |
 | Expo Metro | JS バンドルサーバー |
 
 起動後のバナー：
 
 ```
 ────────────────────────────────────────────────────────────
-  AC-3 クロスデバイス認証テスト URL
-  https://xxxx-yyyy-zzzz.trycloudflare.com
+  RPID / クロスデバイス認証テスト URL
+  https://your-name.ngrok-free.app
 ────────────────────────────────────────────────────────────
 ```
 
-#### iOS
-
-iOS は RPID が固定のため、ngrok 等で**毎回同じ URL**を使います。
-
-```bash
-# ターミナル 1：ngrok で固定 HTTPS URL を発行
-ngrok http 3000 --domain=your-fixed-domain.ngrok.io
-
-# ターミナル 2：RPID を指定してサーバーを起動
-RPID=your-fixed-domain.ngrok.io npm run server
-
-# ターミナル 3：Metro を起動
-npm run expo
-```
-
-> iOS 実機の `BASE_URL` はアプリコード内で Mac のローカル IP（`http://192.168.x.x:3000`）を指定します。シミュレーターは `http://localhost:3000` で動作します。
+> iOS 実機の場合、アプリの `BASE_URL` は Mac のローカル IP（`http://192.168.x.x:3000`）を使用します。シミュレーターは `http://localhost:3000` で動作します。
 
 ---
 
@@ -165,7 +166,7 @@ npm run expo
 
 Android・iOS どちらをスキャン端末にしても同じ手順です。
 
-1. PC の Chrome でバナーに表示された URL（Android: Cloudflare URL、iOS: ngrok URL）を開く
+1. PC の Chrome でバナーに表示された ngrok URL を開く
 2. AC-1 で登録したユーザー名を入力して「パスキーでサインイン」をクリック
 3. ブラウザに QR コードが表示される
 4. スマートフォンのカメラアプリで QR コードをスキャンする
@@ -214,13 +215,11 @@ graph TB
 
     subgraph Mac["Mac（開発機）"]
         Server["Express サーバー :3000"]
-        CF["cloudflared（Android 用）"]
-        NG["ngrok（iOS 用）"]
+        NG["ngrok<br/>（Android / iOS 共通）"]
     end
 
     subgraph Internet["インターネット"]
-        CFEdge["Cloudflare Edge<br/>（Android RPID）"]
-        NGEdge["ngrok Edge<br/>（iOS RPID・固定）"]
+        NGEdge["ngrok Edge<br/>your-name.ngrok-free.app<br/>（固定 URL・Android / iOS 共通 RPID）"]
         GTS["Google Tunnel Server<br/>(caBLE relay)"]
         ATS["Apple Relay Server<br/>(Continuity)"]
     end
@@ -230,10 +229,8 @@ graph TB
     AppA -- "HTTP localhost:3000<br/>(adb reverse)" --> Server
     AppI -- "HTTP localhost:3000<br/>(simulator)" --> Server
     AppI -- "HTTP 192.168.x.x:3000<br/>(実機)" --> Server
-    Server --> CF --> CFEdge
     Server --> NG --> NGEdge
-    CFEdge -- "assetlinks.json / 認証API" --> Browser
-    NGEdge -- "apple-app-site-association / 認証API" --> Browser
+    NGEdge -- "assetlinks.json<br/>apple-app-site-association<br/>認証 API" --> Browser
     CMA -- "HTTPS" --> GTS --> Browser
     CMI -- "HTTPS" --> ATS --> Browser
 ```
@@ -243,10 +240,12 @@ graph TB
 | 項目 | Android | iOS（シミュレーター） | iOS（実機） |
 |------|---------|---------------------|------------|
 | アプリ → サーバー | `localhost:3000`（adb reverse） | `localhost:3000`（直接） | `192.168.x.x:3000`（ローカル IP） |
-| RPID / HTTPS | Cloudflare（起動ごとに変動） | ngrok 固定 URL | ngrok 固定 URL |
+| RPID / HTTPS | ngrok 固定 URL（共通） | ngrok 固定 URL（共通） | ngrok 固定 URL（共通） |
 | 権限検証 | `assetlinks.json` | `apple-app-site-association` | `apple-app-site-association` |
 
 ### RPID と権限検証
+
+RPID は `.env` で一元管理し、Android・iOS 両方で同じ ngrok 固定 URL を使用します。
 
 #### Android：Digital Asset Links
 
@@ -257,8 +256,6 @@ https://<RPID>/.well-known/assetlinks.json
 → sha256_cert_fingerprints と APK 署名を照合
 ```
 
-RPID は起動時に Cloudflare URL から自動検出するため、再ビルド不要で毎回変わっても問題ありません。
-
 #### iOS：Associated Domains
 
 iOS は `apple-app-site-association` でアプリの `TeamID.BundleID` を照合します。
@@ -268,7 +265,7 @@ https://<RPID>/.well-known/apple-app-site-association
 → webcredentials.apps に TeamID.BundleID が含まれるか照合
 ```
 
-**`associatedDomains` はビルド時にアプリへ埋め込まれます。** RPID が変わると再ビルドが必要になるため、iOS では固定ドメインを使用します。
+`associatedDomains` はビルド時にアプリへ埋め込まれますが、RPID が ngrok 固定 URL で変わらないため**再ビルド不要**です。
 
 ### APK / Origin 検証
 
@@ -733,9 +730,8 @@ QRLjacking の実行難易度は高く、ユーザー名の把握・フィッシ
 ## 注意事項
 
 - サーバーはインメモリストアを使用しているため、**再起動するとユーザーデータが消えます**。再起動後は AC-1 からやり直してください。
-- **Android**：Cloudflare Quick Tunnel は起動のたびに URL が変わりますが、`npm run dev` が自動検出して RPID に反映します。
-- **iOS**：`associatedDomains` はビルド時固定のため、ngrok 等の**固定ドメイン**を使用してください。RPID を変更した場合は再ビルドが必要です。
-- **Android**：`npx expo run:android` で再ビルドすると APK が再署名され、APK ハッシュが変わる場合があります。`app/android/app/debug.keystore` を固定して使い続けてください。
+- RPID は `.env` の `RPID`（ngrok static domain）で一元管理します。変更した場合は iOS の再ビルドが必要です。
+- `npx expo run:android` で再ビルドすると APK が再署名され、APK ハッシュが変わる場合があります。`app/android/app/debug.keystore` を固定して使い続けてください。
 - AC-3 テストは PC の **Chrome** 推奨です（Safari は CTAP2 Hybrid の対応状況が異なります）。
 - AC-4 テストは **Mac Safari** 使用（Chrome では Continuity は動作しません）。
 - アプリ内 QR スキャナーでクロスデバイス認証を行う場合は、スキャン前にユーザー名を入力してください（ポーリングにユーザー名が必要です）。
