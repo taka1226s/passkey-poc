@@ -243,6 +243,22 @@ PC Chrome ──HTTPS──→ Google Tunnel Server ←──HTTPS── Android
 
 Credential Manager・Google Tunnel Server はどちらも WebAuthn 仕様には直接登場せず、CTAP2 Hybrid（caBLE）プロトコルのレイヤーで動作します。RP サーバーは「どのルートで署名が届いたか」を関知せず、「有効な署名かどうか」だけを検証します。
 
+### iOS パスキー API（iCloud Keychain）
+
+iOS のパスキー実装は Android の Credential Manager に相当しますが、設計思想が異なります。
+
+| 項目 | Android Credential Manager | iOS パスキー API |
+|------|---------------------------|----------------|
+| 実装主体 | Google Play Services | OS 組み込み（iOS 16+） |
+| 権限検証ファイル | `assetlinks.json` | `apple-app-site-association` |
+| Origin 形式 | `android:apk-key-hash:<hash>` | `https://<RPID>`（Web と同形式） |
+| 秘密鍵の保管 | TEE / StrongBox | Secure Enclave |
+| クラウド同期 | Google アカウント経由 | iCloud Keychain 経由 |
+| クロスデバイス連携 | CTAP2 Hybrid（QR + Google Tunnel） | Continuity（BLE + Wi-Fi、Apple デバイス間） |
+| FIDO:// URI 処理 | GMS が排他ハンドラ | iOS が排他ハンドラ（アプリ介入不可） |
+
+iOS の最大の特徴は **Origin 形式が Web と同じ `https://<RPID>`** である点です。サーバー側では `ORIGIN_WEB`（= `https://<RPID>`）として既に許可しているため、Android 固有の `android:apk-key-hash` 検証コードを追加する必要がありません。
+
 ---
 
 ## 認証フロー
@@ -252,8 +268,8 @@ Credential Manager・Google Tunnel Server はどちらも WebAuthn 仕様には�
 ```mermaid
 sequenceDiagram
     actor User as ユーザー
-    participant App as Android アプリ
-    participant CM as Credential Manager<br/>(Google Play Services)
+    participant App as アプリ<br/>（Android / iOS）
+    participant CM as パスキー API<br/>Android: Credential Manager<br/>iOS: iCloud Keychain
     participant Server as Express サーバー
 
     Note over Server: RPID = Cloudflare URL<br/>RP Name = "Passkey PoC"
@@ -261,7 +277,7 @@ sequenceDiagram
     User->>App: ユーザー名入力 → 「パスキーを登録」タップ
 
     rect rgb(220, 235, 255)
-        Note over App,Server: ① チャレンジ取得
+        Note over App,Server: ① チャレンジ取得（Android / iOS 共通）
         App->>Server: POST /registration/begin { username }
         Note over Server: ユーザー作成 or 取得<br/>ランダムチャレンジ生成<br/>セッションに保存
         Server-->>App: options { challenge, rpID,<br/>userName, userID,<br/>authenticatorSelection }
@@ -270,17 +286,30 @@ sequenceDiagram
     rect rgb(220, 255, 220)
         Note over App,CM: ② デバイス上での鍵生成
         App->>CM: Passkey.register(options)
-        Note over CM: options を Credential Manager API に渡す<br/>rpID の assetlinks.json を検証<br/>（https://rpID/.well-known/assetlinks.json）
-        CM->>User: 生体認証プロンプト（指紋 / 顔認証）
+        alt Android
+            Note over CM: 【権限検証】<br/>https://rpID/.well-known/assetlinks.json<br/>→ APK SHA-256 フィンガープリントを照合
+        else iOS
+            Note over CM: 【権限検証】<br/>https://rpID/.well-known/apple-app-site-association<br/>→ TeamID.BundleID を照合
+        end
+        CM->>User: 生体認証プロンプト<br/>Android: 指紋 / 顔認証<br/>iOS: Face ID / Touch ID
         User-->>CM: 認証
-        Note over CM: 公開鍵 / 秘密鍵ペアを生成<br/>秘密鍵は Secure Enclave に保管<br/>公開鍵をレスポンスに含める<br/>origin = android:apk-key-hash:<hash>
+        alt Android
+            Note over CM: 公開鍵 / 秘密鍵ペアを生成<br/>秘密鍵は TEE / StrongBox に保管<br/>origin = android:apk-key-hash:<hash>
+        else iOS
+            Note over CM: 公開鍵 / 秘密鍵ペアを生成<br/>秘密鍵は Secure Enclave に保管<br/>iCloud Keychain でバックアップ・同期<br/>origin = https://<RPID>
+        end
         CM-->>App: RegistrationResponseJSON<br/>{ id, rawId, response:<br/>{ attestationObject, clientDataJSON,<br/>  transports }, type }
     end
 
     rect rgb(255, 245, 220)
         Note over App,Server: ③ サーバー側検証・保存
         App->>Server: POST /registration/complete<br/>{ username, credential }
-        Note over Server: clientDataJSON の challenge 照合<br/>origin 検証（android:apk-key-hash）<br/>rpID 検証<br/>公開鍵・カウンターを DB 保存
+        alt Android
+            Note over Server: origin 検証:<br/>android:apk-key-hash:<hash> と照合
+        else iOS
+            Note over Server: origin 検証:<br/>https://<RPID> と照合<br/>（ORIGIN_WEB として既に allowedOrigins に含む）
+        end
+        Note over Server: challenge / rpID 検証<br/>公開鍵・カウンターを DB 保存
         Server-->>App: { verified: true }
     end
 
@@ -292,14 +321,14 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     actor User as ユーザー
-    participant App as Android アプリ
-    participant CM as Credential Manager<br/>(Google Play Services)
+    participant App as アプリ<br/>（Android / iOS）
+    participant CM as パスキー API<br/>Android: Credential Manager<br/>iOS: iCloud Keychain
     participant Server as Express サーバー
 
     User->>App: ユーザー名入力 → 「パスキーでサインイン」タップ
 
     rect rgb(220, 235, 255)
-        Note over App,Server: ① チャレンジ取得
+        Note over App,Server: ① チャレンジ取得（Android / iOS 共通）
         App->>Server: POST /authentication/begin { username }
         Note over Server: ユーザー存在確認<br/>ランダムチャレンジ生成<br/>登録済みクレデンシャル ID 一覧を返す
         Server-->>App: options { challenge, rpID,<br/>allowCredentials: [{ id, transports }],<br/>userVerification: "required" }
@@ -309,16 +338,25 @@ sequenceDiagram
         Note over App,CM: ② デバイス上での署名
         App->>CM: Passkey.authenticate(options)
         Note over CM: allowCredentials の中から<br/>デバイス上の秘密鍵を検索<br/>rpID の検証
-        CM->>User: 生体認証プロンプト
+        CM->>User: 生体認証プロンプト<br/>Android: 指紋 / 顔認証<br/>iOS: Face ID / Touch ID
         User-->>CM: 認証
-        Note over CM: 秘密鍵でチャレンジに署名<br/>authenticatorData（カウンター含む）を生成<br/>origin = android:apk-key-hash:<hash>
+        alt Android
+            Note over CM: 秘密鍵でチャレンジに署名<br/>authenticatorData（カウンター含む）を生成<br/>origin = android:apk-key-hash:<hash>
+        else iOS
+            Note over CM: 秘密鍵でチャレンジに署名<br/>authenticatorData（カウンター含む）を生成<br/>origin = https://<RPID>
+        end
         CM-->>App: AuthenticationResponseJSON<br/>{ id, response:<br/>{ authenticatorData, clientDataJSON,<br/>  signature, userHandle }, type }
     end
 
     rect rgb(255, 245, 220)
         Note over App,Server: ③ サーバー側署名検証
         App->>Server: POST /authentication/complete<br/>{ username, credential }
-        Note over Server: challenge 照合<br/>origin / rpID 検証<br/>保存済み公開鍵で署名を検証<br/>カウンター値の単調増加を確認（リプレイ攻撃防止）<br/>lastAuthenticatedAt を記録
+        alt Android
+            Note over Server: origin 検証: android:apk-key-hash:<hash>
+        else iOS
+            Note over Server: origin 検証: https://<RPID>
+        end
+        Note over Server: challenge / rpID 検証<br/>保存済み公開鍵で署名を検証<br/>カウンター値の単調増加を確認（リプレイ攻撃防止）<br/>lastAuthenticatedAt を記録
         Server-->>App: { verified: true }
     end
 
@@ -327,13 +365,15 @@ sequenceDiagram
 
 ### AC-3：クロスデバイス認証（CTAP2 Hybrid）
 
+スキャン端末が Android・iOS どちらの場合も同じフローです。
+
 ```mermaid
 sequenceDiagram
     actor User as ユーザー
     participant Browser as PC Chrome
     participant Server as Express サーバー
-    participant GTS as Google Tunnel Server<br/>(caBLE relay)
-    participant CM as Android<br/>Credential Manager
+    participant GTS as Google / Apple<br/>Tunnel Server（caBLE relay）
+    participant CM as スキャン端末<br/>Android: Credential Manager<br/>iOS: iCloud Keychain
 
     User->>Browser: Cloudflare URL を開き<br/>ユーザー名入力 → 「パスキーでサインイン」
 
@@ -352,26 +392,78 @@ sequenceDiagram
     end
 
     rect rgb(255, 220, 220)
-        Note over User,CM: ③ Android 側スキャン・近接確認・署名
+        Note over User,CM: ③ スキャン端末側の処理・近接確認・署名
         User->>CM: カメラで FIDO:// QR をスキャン
-        Note over CM: QR から トンネル URL・セッション公開鍵を取得<br/>BLE アドバタイズ（近接確認、任意）
+        Note over CM: QR からトンネル URL・セッション公開鍵を取得
+        alt Android
+            Note over CM: BLE アドバタイズ（近接確認、任意）<br/>Google Tunnel Server へ接続
+        else iOS
+            Note over CM: BLE アドバタイズ（近接確認）<br/>Apple の caBLE Tunnel Server へ接続
+        end
         CM->>GTS: caBLE ハンドシェイク（HTTPS）<br/>E2E 暗号化トンネル確立
         GTS->>Browser: トンネル確立通知
-        CM->>User: 生体認証プロンプト
+        CM->>User: 生体認証プロンプト<br/>Android: 指紋 / 顔認証<br/>iOS: Face ID / Touch ID
         User-->>CM: 認証
-        Note over CM: 秘密鍵でチャレンジに署名<br/>origin = https://rpID（PC ブラウザのドメイン）
+        Note over CM: 秘密鍵でチャレンジに署名<br/>origin = https://rpID（PC ブラウザのドメイン）<br/>※ Android / iOS 共に Web origin 形式
         CM->>GTS: 署名済みクレデンシャル（E2E 暗号化）
         GTS-->>Browser: クレデンシャル転送・復号
     end
 
     rect rgb(255, 245, 220)
-        Note over Browser,Server: ④ サーバー側検証
+        Note over Browser,Server: ④ サーバー側検証（Android / iOS 共通）
         Browser->>Server: POST /authentication/complete<br/>{ username, credential }
-        Note over Server: challenge / origin / rpID 検証<br/>公開鍵で署名を検証<br/>カウンター確認
+        Note over Server: challenge / origin / rpID 検証<br/>origin = https://<RPID>（Web origin として検証）<br/>公開鍵で署名を検証・カウンター確認
         Server-->>Browser: { verified: true }
     end
 
     Browser-->>User: 認証完了表示（JSON レスポンス）
+```
+
+### AC-3（iOS Continuity フロー）
+
+Mac Safari と iPhone が**同一 Apple ID** でサインインしている場合、QR コードを使わず Apple の Continuity 技術で認証します。
+
+```mermaid
+sequenceDiagram
+    actor User as ユーザー
+    participant Safari as Mac Safari
+    participant Server as Express サーバー
+    participant ATS as Apple Relay Server<br/>（Continuity）
+    participant iPhone as iPhone<br/>iCloud Keychain
+
+    User->>Safari: Cloudflare URL を開き<br/>ユーザー名入力 → 「パスキーでサインイン」
+
+    rect rgb(220, 235, 255)
+        Note over Safari,Server: ① チャレンジ取得
+        Safari->>Server: POST /authentication/begin { username }
+        Server-->>Safari: options { challenge, allowCredentials, ... }
+    end
+
+    rect rgb(220, 255, 220)
+        Note over Safari,iPhone: ② Continuity による近接デバイス検出
+        Safari->>Safari: WebAuthn API 起動<br/>同一 Apple ID の iPhone を検出
+        Note over Safari: QR コードは表示しない<br/>BLE + Wi-Fi で iPhone との近接を確認（両方必須）
+        Safari->>ATS: Apple Relay を通じて iPhone へ通知
+        ATS->>iPhone: 認証リクエスト通知（プッシュ）
+    end
+
+    rect rgb(255, 220, 220)
+        Note over iPhone: ③ iPhone 側での署名
+        iPhone->>User: Face ID / Touch ID プロンプト
+        User-->>iPhone: 認証
+        Note over iPhone: 秘密鍵でチャレンジに署名<br/>origin = https://<RPID><br/>BLE + Wi-Fi で近接確認済みのため<br/>QRLjacking は物理的に成立しない
+        iPhone->>ATS: 署名済みクレデンシャル
+        ATS->>Safari: クレデンシャル転送
+    end
+
+    rect rgb(255, 245, 220)
+        Note over Safari,Server: ④ サーバー側検証
+        Safari->>Server: POST /authentication/complete<br/>{ username, credential }
+        Note over Server: origin 検証: https://<RPID><br/>公開鍵で署名を検証・カウンター確認
+        Server-->>Safari: { verified: true }
+    end
+
+    Safari-->>User: 認証完了表示
 ```
 
 ### AC-3（アプリ内 QR スキャナー経由）
