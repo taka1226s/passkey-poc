@@ -80,7 +80,7 @@ cd app && npm install && cd ..
 #### Android
 
 - Android 実機（Android 9 以上、Google アカウントでサインイン済み）
-- USB ケーブル（USB デバッグ有効）
+- USB ケーブル（初回ビルド・インストール時のみ）
 
 ```bash
 brew install android-platform-tools
@@ -129,7 +129,6 @@ npm run dev
 
 | プロセス | 内容 |
 |---------|------|
-| `adb reverse tcp:3000 tcp:3000` | Android 実機 → Mac の localhost をトンネル |
 | ngrok（`.env` の RPID で起動） | 固定 HTTPS URL を発行（毎回同じ URL） |
 | Express サーバー | `.env` の RPID をセットして起動 |
 | Expo Metro | JS バンドルサーバー |
@@ -143,7 +142,7 @@ npm run dev
 ────────────────────────────────────────────────────────────
 ```
 
-> iOS 実機の場合、アプリの `BASE_URL` は Mac のローカル IP（`http://192.168.x.x:3000`）を使用します。シミュレーターは `http://localhost:3000` で動作します。
+> Android・iOS 実機・シミュレーターのいずれも、アプリの `BASE_URL` は ngrok URL（`https://your-name.ngrok-free.app`）です。USB 接続は不要です。
 
 ---
 
@@ -226,22 +225,24 @@ graph TB
 
     Browser["PC Chrome / Mac Safari"]
 
-    AppA -- "HTTP localhost:3000<br/>(adb reverse)" --> Server
-    AppI -- "HTTP localhost:3000<br/>(simulator)" --> Server
-    AppI -- "HTTP 192.168.x.x:3000<br/>(実機)" --> Server
-    Server --> NG --> NGEdge
+    AppA -- "HTTPS" --> NGEdge
+    AppI -- "HTTPS" --> NGEdge
+    NGEdge --> NG --> Server
     NGEdge -- "assetlinks.json<br/>apple-app-site-association<br/>認証 API" --> Browser
     CMA -- "HTTPS" --> GTS --> Browser
     CMI -- "HTTPS" --> ATS --> Browser
 ```
 
-### 通信経路の違い（Android vs iOS）
+### 通信経路
+
+アプリの `BASE_URL` と RPID はすべてのプラットフォームで同じ ngrok URL です。USB 接続は初回ビルド時のみ必要です。
 
 | 項目 | Android | iOS（シミュレーター） | iOS（実機） |
 |------|---------|---------------------|------------|
-| アプリ → サーバー | `localhost:3000`（adb reverse） | `localhost:3000`（直接） | `192.168.x.x:3000`（ローカル IP） |
-| RPID / HTTPS | ngrok 固定 URL（共通） | ngrok 固定 URL（共通） | ngrok 固定 URL（共通） |
+| アプリ → サーバー | `https://ngrok URL`（Wi-Fi） | `https://ngrok URL` | `https://ngrok URL`（Wi-Fi） |
+| RPID | ngrok 固定 URL（共通） | ngrok 固定 URL（共通） | ngrok 固定 URL（共通） |
 | 権限検証 | `assetlinks.json` | `apple-app-site-association` | `apple-app-site-association` |
+| USB 接続 | 初回ビルドのみ | 不要 | 初回ビルドのみ |
 
 ### RPID と権限検証
 
@@ -731,6 +732,7 @@ QRLjacking の実行難易度は高く、ユーザー名の把握・フィッシ
 
 - サーバーはインメモリストアを使用しているため、**再起動するとユーザーデータが消えます**。再起動後は AC-1 からやり直してください。
 - RPID は `.env` の `RPID`（ngrok static domain）で一元管理します。変更した場合は iOS の再ビルドが必要です。
+- Android・iOS ともに USB 接続は**初回ビルド時のみ**必要です。以降は Wi-Fi 接続のみで動作します。
 - `npx expo run:android` で再ビルドすると APK が再署名され、APK ハッシュが変わる場合があります。`app/android/app/debug.keystore` を固定して使い続けてください。
 - AC-3 テストは PC の **Chrome** 推奨です（Safari は CTAP2 Hybrid の対応状況が異なります）。
 - AC-4 テストは **Mac Safari** 使用（Chrome では Continuity は動作しません）。
