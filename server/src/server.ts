@@ -27,6 +27,10 @@ const ANDROID_SHA256_FINGERPRINT =
   'FA:C6:17:45:DC:09:03:78:6F:B9:ED:E6:2A:96:2B:39:9F:73:48:F0:BB:6F:89:9B:83:32:66:75:91:03:3B:9C';
 const ANDROID_PACKAGE_NAME = 'com.anonymous.app';
 
+// iOS Associated Domains 用
+const APPLE_TEAM_ID = process.env['APPLE_TEAM_ID'] ?? '';
+const IOS_BUNDLE_ID = process.env['IOS_BUNDLE_ID'] ?? '';
+
 function allowedOrigins(): string[] {
   return [ORIGIN_WEB, ORIGIN_LOCAL, ORIGIN_ANDROID];
 }
@@ -37,6 +41,21 @@ app.use(express.json());
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true });
+});
+
+// Apple App Site Association（iOS パスキー / Associated Domains の検証に必須）
+app.get('/.well-known/apple-app-site-association', (_req, res) => {
+  res.json({
+    webcredentials: {
+      apps: APPLE_TEAM_ID && IOS_BUNDLE_ID ? [`${APPLE_TEAM_ID}.${IOS_BUNDLE_ID}`] : [],
+    },
+    applinks: {
+      apps: [],
+      details: APPLE_TEAM_ID && IOS_BUNDLE_ID
+        ? [{ appID: `${APPLE_TEAM_ID}.${IOS_BUNDLE_ID}`, paths: ['*'] }]
+        : [],
+    },
+  });
 });
 
 // Digital Asset Links（Android Credential Manager の検証に必須）

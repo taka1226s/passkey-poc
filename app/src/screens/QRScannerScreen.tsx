@@ -9,8 +9,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-
-const BASE_URL = 'http://localhost:3000';
+import { BASE_URL } from '../config';
 
 type Props = {
   username: string;

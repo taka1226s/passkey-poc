@@ -4,14 +4,10 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "adb reverse tcp:3000 tcp:3000 && concurrently --names \"tunnel+server,expo\" --prefix-colors \"cyan,yellow\" \"node scripts/tunnel-server.js\" \"npm run expo\"",
-    "expo": "npm --prefix app start"
+    "dev": "node --env-file=.env scripts/dev.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
-  "devDependencies": {
-    "concurrently": "^9.2.1"
-  }
+  "type": "commonjs"
 }

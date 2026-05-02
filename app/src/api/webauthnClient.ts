@@ -9,7 +9,10 @@ async function post<T>(url: string, body: unknown): Promise<T> {
   try {
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'ngrok-skip-browser-warning': 'true',
+      },
       body: JSON.stringify(body),
     });
     console.log('[POST response]', url, res.status);

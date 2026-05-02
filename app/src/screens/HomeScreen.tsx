@@ -10,8 +10,7 @@ import {
 } from 'react-native';
 import { usePasskey } from '../hooks/usePasskey';
 import { QRScannerScreen } from './QRScannerScreen';
-
-const BASE_URL = 'http://localhost:3000';
+import { BASE_URL } from '../config';
 
 export function HomeScreen() {
   const [username, setUsername] = useState('');
@@ -27,7 +26,6 @@ export function HomeScreen() {
         onClose={() => setShowScanner(false)}
         onSuccess={() => {
           setShowScanner(false);
-          setStatus({ type: 'success', message: 'クロスデバイス認証が完了しました' });
         }}
       />
     );

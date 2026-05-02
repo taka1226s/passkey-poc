@@ -59,9 +59,11 @@ export function usePasskey(baseUrl: string): UsePasskeyResult {
     try {
       setStatus(await runRegistration(baseUrl, username));
     } catch (err) {
-      console.error('[register error]', JSON.stringify(err));
-      console.error('[register error keys]', err !== null && typeof err === 'object' ? Object.keys(err) : typeof err);
-      console.error('[register error full]', err instanceof Error ? { message: err.message, name: err.name, stack: err.stack } : err);
+      console.error('[register error raw]', err);
+      console.error('[register error json]', JSON.stringify(err, Object.getOwnPropertyNames(err)));
+      if (err !== null && typeof err === 'object') {
+        console.error('[register error props]', Object.getOwnPropertyNames(err));
+      }
       const message = err instanceof Error ? `登録エラー: ${err.message}` : `登録エラー: ${String(err)}`;
       setStatus({ type: 'error', message });
     } finally {
