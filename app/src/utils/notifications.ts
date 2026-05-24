@@ -41,7 +41,7 @@ export async function savePushTokenToServer(
   token: string,
   deviceToken: string,
 ): Promise<void> {
-  console.log('[notifications] サーバーにトークン登録:', username);
+  if (__DEV__) console.log('[notifications] サーバーにトークン登録:', username);
   const res = await fetch(`${BASE_URL}/push-token`, {
     method: 'POST',
     headers: {
@@ -51,5 +51,5 @@ export async function savePushTokenToServer(
     body: JSON.stringify({ username, token, deviceToken }),
   });
   const body = await res.json();
-  console.log('[notifications] トークン登録レスポンス:', body);
+  if (__DEV__) console.log('[notifications] トークン登録レスポンス:', body);
 }

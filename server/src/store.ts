@@ -157,12 +157,22 @@ export const store = {
   },
 
   savePushToken(username: string, token: string): void {
+    for (const u of users.values()) {
+      if (u.username !== username && u.pushToken === token) u.pushToken = undefined;
+    }
     const user = users.get(username);
     if (user) user.pushToken = token;
   },
 
   getPushToken(username: string): string | undefined {
     return users.get(username)?.pushToken;
+  },
+
+  getUserByPushToken(token: string): UserRecord | undefined {
+    for (const user of users.values()) {
+      if (user.pushToken === token) return user;
+    }
+    return undefined;
   },
 
   // デバイストークン: passkey 登録・承認時に発行し /push-token の認証に使用

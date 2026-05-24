@@ -240,7 +240,19 @@ app.post('/registration/authorize', async (req, res) => {
       return;
     }
 
-    store.updateCounter(user.username, storedCred.id, verification.authenticationInfo.newCounter);
+    // C-2: counter 巻き戻し検出（A6 相当）
+    const newCounter = verification.authenticationInfo.newCounter;
+    if (storedCred.counter > 0 && newCounter <= storedCred.counter) {
+      console.error('[security] counter rollback detected in /registration/authorize:', {
+        username: user.username,
+        credentialId: storedCred.id,
+        stored: storedCred.counter,
+        received: newCounter,
+      });
+      res.status(400).json({ error: '認証カウンターが無効です' });
+      return;
+    }
+    store.updateCounter(user.username, storedCred.id, newCounter);
     const registrationToken = store.createRegistrationToken(user.username);
     res.json({ registrationToken });
   } catch {
@@ -357,7 +369,7 @@ app.post('/authentication/complete', async (req, res) => {
     setTimeout(() => {
       const a = store.getApproval(approval.id);
       if (a?.status === 'pending') store.updateApprovalStatus(approval.id, 'expired');
-    }, APPROVAL_TIMEOUT_MS);
+    }, APPROVAL_TIMEOUT_MS).unref();
 
     sendApprovalPushNotification(pushToken, user.username, approval.id).catch(() => {});
 
@@ -471,6 +483,12 @@ app.post('/authentication/approve', (req, res) => {
     res.status(409).json({ error: `既に ${approval.status} 状態です` });
     return;
   }
+  // M-8: 提出コードが提示選択肢内であることを検証（ブルートフォース防止）
+  if (!approval.choices.includes(selectedCode)) {
+    store.updateApprovalStatus(approvalId, 'rejected');
+    res.status(400).json({ error: 'コードが無効です。セキュリティのためリクエストを無効化しました' });
+    return;
+  }
   if (selectedCode !== approval.code) {
     store.incrementFailedAttempts(approvalId);
     store.updateApprovalStatus(approvalId, 'rejected');
@@ -525,7 +543,8 @@ app.get('/authentication/status', (req, res) => {
   const lastAuthenticatedAt = store.getLastAuthenticatedAt(username);
   const sinceMs = since ? parseInt(since, 10) : 0;
   const authenticated = lastAuthenticatedAt !== undefined && lastAuthenticatedAt > sinceMs;
-  res.json({ authenticated, lastAuthenticatedAt });
+  // M-7: lastAuthenticatedAt を返さない（ユーザー存在有無を漏らさない）
+  res.json({ authenticated });
 });
 
 // ---- Web UI ----

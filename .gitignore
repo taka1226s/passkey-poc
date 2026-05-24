@@ -1,6 +1,6 @@
 # Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
 
-# dependencies
+# Dependencies
 node_modules/
 
 # Expo
@@ -9,46 +9,46 @@ dist/
 web-build/
 expo-env.d.ts
 
-# Native
-.kotlin/
-*.orig.*
-*.jks
-*.p8
-*.p12
-*.key
-*.mobileprovision
-
 # Metro
 .metro-health-check*
 
-# debug
+# Debug
 npm-debug.*
 yarn-debug.*
 yarn-error.*
 
 # macOS
 .DS_Store
-*.pem
 
-# local env files
-.env
-.env*.local
-app/.env
-
-# typescript
+# TypeScript
 *.tsbuildinfo
 
-# generated native folders
-/ios
-/android
-node_modules/
+# Local env files
+.env
+.env*.local
 
-# server build
+# Signing & certificates
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.pem
+*.orig.*
+.kotlin/
+
+# Firebase – secret keys (never commit)
+*firebase-adminsdk*.json
+google-services.json
+
+# EAS Build config
+app/eas.json
+
+# Server build output
 server/dist/
 
-# Android keystore (debug is ok to commit for PoC)
-*.p12
-*.jks
+# Temporary files
+tmp/
 
-# app nested git
-app/.git/
+# Root-level dummy app.json (Expo CLI artifact)
+/app.json

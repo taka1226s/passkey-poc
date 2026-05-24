@@ -148,9 +148,21 @@ describe('C3: QRLjacking 防御 - push approval セキュリティ', () => {
     expect(res.status).toBe(404);
   });
 
+  it('M-8: selectedCode が choices に含まれない場合 400 を返し approval を rejected にする', async () => {
+    const approval = setupApproval();
+    const invalidCode = 0; // choices は常に 10-99 の範囲なので 0 は無効
+    const res = await request(app)
+      .post('/authentication/approve')
+      .send({ approvalId: approval.id, sessionToken: approval.sessionToken, selectedCode: invalidCode });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/コードが無効/);
+    expect(store.getApproval(approval.id)!.status).toBe('rejected');
+  });
+
   it('B6: /approve は誤った selectedCode で 400 を返し approval を rejected にする（C1: 試行制限）', async () => {
     const approval = setupApproval();
-    const wrongCode = approval.code === 10 ? 11 : approval.code - 1;
+    // choices 内の正解以外のコードを使用（M-8 の choices 外ブロックを避ける）
+    const wrongCode = approval.choices.find(c => c !== approval.code)!;
     const res = await request(app)
       .post('/authentication/approve')
       .send({ approvalId: approval.id, sessionToken: approval.sessionToken, selectedCode: wrongCode });
@@ -162,7 +174,7 @@ describe('C3: QRLjacking 防御 - push approval セキュリティ', () => {
 
   it('C1: rejected になった approval は再度 /approve しても 409 を返す', async () => {
     const approval = setupApproval();
-    const wrongCode = approval.code === 10 ? 11 : approval.code - 1;
+    const wrongCode = approval.choices.find(c => c !== approval.code)!;
     await request(app)
       .post('/authentication/approve')
       .send({ approvalId: approval.id, sessionToken: approval.sessionToken, selectedCode: wrongCode });
@@ -336,6 +348,19 @@ describe('C3: QRLjacking 防御 - push approval セキュリティ', () => {
   });
 });
 
+// ---- M-7: ユーザー列挙対策 ----
+
+describe('M-7: /authentication/status はユーザー存在を漏らさない', () => {
+  it('レスポンスに lastAuthenticatedAt が含まれない', async () => {
+    const res = await request(app)
+      .get('/authentication/status?username=m7-nonexistent-user');
+    expect(res.status).toBe(200);
+    expect(res.body).not.toHaveProperty('lastAuthenticatedAt');
+    expect(res.body).toHaveProperty('authenticated');
+    expect(res.body.authenticated).toBe(false);
+  });
+});
+
 // ---- M3: session.username バインディング ----
 
 describe('M3: session.username バインディング', () => {
@@ -470,6 +495,20 @@ describe('POST /push-token', () => {
       .post('/push-token')
       .send({ username: 'different-user', token: 'ExponentPushToken[test]', deviceToken });
     expect(res.status).toBe(403);
+  });
+
+  it('C-3: 同一 push token を別ユーザーが登録すると旧ユーザーのトークンが削除される', async () => {
+    const token = 'ExponentPushToken[c3-shared-token]';
+    const dt1 = store.createDeviceToken('c3-user1');
+    store.getOrCreateUser('c3-user1');
+    await request(app).post('/push-token').send({ username: 'c3-user1', token, deviceToken: dt1 });
+    expect(store.getPushToken('c3-user1')).toBe(token);
+
+    const dt2 = store.createDeviceToken('c3-user2');
+    store.getOrCreateUser('c3-user2');
+    await request(app).post('/push-token').send({ username: 'c3-user2', token, deviceToken: dt2 });
+    expect(store.getPushToken('c3-user2')).toBe(token);
+    expect(store.getPushToken('c3-user1')).toBeUndefined();
   });
 
   it('H1: deviceToken は一度消費すると再利用できない', async () => {

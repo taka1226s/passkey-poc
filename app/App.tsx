@@ -37,6 +37,8 @@ export default function App() {
 
     const sessionToken = await claimSessionToken(BASE_URL, approvalId, pushToken);
     if (sessionToken) {
+      // H-5: claim 成功時のみ pendingBanner をクリア（startup polling と競合しても approval が消えない）
+      setPendingBanner(null);
       setApprovalRequest({ approvalId, username, sessionToken });
     }
   }
@@ -70,9 +72,9 @@ export default function App() {
     });
 
     // 通知タップ時（バックグラウンド・killed state からの復帰、フォアグラウンドバナータップ）
+    // H-5: setPendingBanner(null) は handleNotificationData 内の claim 成功時にのみ実行
     responseListenerRef.current = Notifications.addNotificationResponseReceivedListener(
       (response) => {
-        setPendingBanner(null);
         handleNotificationData(response.notification.request.content.data as Record<string, unknown>);
       }
     );
