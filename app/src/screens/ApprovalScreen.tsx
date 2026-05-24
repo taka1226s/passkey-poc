@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { BASE_URL } from '../config';
+import { registerForPushNotifications, savePushTokenToServer } from '../utils/notifications';
 
 type Props = {
   approvalId: string;
@@ -87,9 +88,17 @@ export function ApprovalScreen({ approvalId, username, sessionToken, onDone }: P
         body: JSON.stringify({ approvalId, sessionToken, selectedCode: selected }),
       });
       if (!res.ok) {
-        const { error } = await res.json();
+        const { error } = await res.json().catch(() => ({})) as { error?: string };
         Alert.alert('エラー', error ?? '承認に失敗しました');
         return;
+      }
+      // H1: 承認後に発行された deviceToken で push token を再登録（token 更新対応）
+      const { deviceToken } = await res.json().catch(() => ({})) as { deviceToken?: string };
+      if (deviceToken) {
+        const pushToken = await registerForPushNotifications().catch(() => null);
+        if (pushToken) {
+          await savePushTokenToServer(username, pushToken, deviceToken).catch(() => {});
+        }
       }
     } catch {
       Alert.alert('エラー', 'サーバーへの接続に失敗しました');
@@ -112,7 +121,7 @@ export function ApprovalScreen({ approvalId, username, sessionToken, onDone }: P
         onPress: async () => {
           setLoading(true);
           try {
-            await fetch(`${BASE_URL}/authentication/reject`, {
+            const res = await fetch(`${BASE_URL}/authentication/reject`, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
@@ -120,8 +129,14 @@ export function ApprovalScreen({ approvalId, username, sessionToken, onDone }: P
               },
               body: JSON.stringify({ approvalId, sessionToken }),
             });
+            if (!res.ok) {
+              const { error } = await res.json().catch(() => ({})) as { error?: string };
+              Alert.alert('エラー', error ?? '拒否に失敗しました');
+              return;
+            }
           } catch {
             Alert.alert('エラー', 'サーバーへの接続に失敗しました');
+            return;
           } finally {
             setLoading(false);
           }

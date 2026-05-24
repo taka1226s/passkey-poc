@@ -63,10 +63,11 @@ describe('authenticationBegin', () => {
 });
 
 describe('registrationComplete', () => {
-  it('POST /registration/complete を呼び出して verified を返す', async () => {
-    mockFetch({ verified: true });
+  it('POST /registration/complete を呼び出して verified と deviceToken を返す', async () => {
+    mockFetch({ verified: true, deviceToken: 'dt-xxx' });
     const result = await registrationComplete(BASE_URL, 'test-user', {} as never, 'session-id');
-    expect(result).toBe(true);
+    expect(result.verified).toBe(true);
+    expect(result.deviceToken).toBe('dt-xxx');
   });
 });
 

@@ -2,7 +2,8 @@ export type RegistrationOptionsJSON = Record<string, unknown> & { sessionId: str
 export type AuthenticationOptionsJSON = Record<string, unknown> & { sessionId: string };
 export type RegistrationResponseJSON = Record<string, unknown>;
 export type AuthenticationResponseJSON = Record<string, unknown>;
-export type AuthenticationCompleteResult = { approvalId: string; code: number };
+export type RegistrationCompleteResult = { verified: boolean; deviceToken?: string };
+export type AuthenticationCompleteResult = { approvalId?: string; code?: number; verified?: boolean };
 
 async function post<T>(url: string, body: unknown): Promise<T> {
   const res = await fetch(url, {
@@ -32,12 +33,12 @@ export function registrationComplete(
   username: string,
   credential: RegistrationResponseJSON,
   sessionId: string,
-): Promise<boolean> {
-  return post<{ verified: boolean }>(`${baseUrl}/registration/complete`, {
+): Promise<RegistrationCompleteResult> {
+  return post<RegistrationCompleteResult>(`${baseUrl}/registration/complete`, {
     username,
     credential,
     sessionId,
-  }).then((r) => r.verified);
+  });
 }
 
 export function authenticationBegin(
@@ -53,4 +54,26 @@ export function authenticationComplete(
   sessionId: string,
 ): Promise<AuthenticationCompleteResult> {
   return post(`${baseUrl}/authentication/complete`, { credential, sessionId });
+}
+
+export async function claimSessionToken(
+  baseUrl: string,
+  approvalId: string,
+  pushToken: string,
+): Promise<string | null> {
+  try {
+    const res = await fetch(`${baseUrl}/authentication/claim`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'ngrok-skip-browser-warning': 'true',
+      },
+      body: JSON.stringify({ approvalId, pushToken }),
+    });
+    if (!res.ok) return null;
+    const { sessionToken } = await res.json() as { sessionToken?: string };
+    return sessionToken ?? null;
+  } catch {
+    return null;
+  }
 }

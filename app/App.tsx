@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from 'react';
 import { HomeScreen } from './src/screens/HomeScreen';
 import { BASE_URL } from './src/config';
 import { registerForPushNotifications } from './src/utils/notifications';
+import { claimSessionToken } from './src/api/webauthnClient';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -26,13 +27,16 @@ export default function App() {
   const [pendingBanner, setPendingBanner] = useState<ApprovalRequest | null>(null);
   const responseListenerRef = useRef<Notifications.EventSubscription | null>(null);
 
-  function handleNotificationData(data: Record<string, unknown>) {
-    const { approvalId, username, sessionToken } = data as {
-      approvalId?: string;
-      username?: string;
-      sessionToken?: string;
-    };
-    if (approvalId && username && sessionToken) {
+  // H2: push data には approvalId + username のみ。sessionToken は claim で取得
+  async function handleNotificationData(data: Record<string, unknown>) {
+    const { approvalId, username } = data as { approvalId?: string; username?: string };
+    if (!approvalId || !username) return;
+
+    const pushToken = await registerForPushNotifications();
+    if (!pushToken) return;
+
+    const sessionToken = await claimSessionToken(BASE_URL, approvalId, pushToken);
+    if (sessionToken) {
       setApprovalRequest({ approvalId, username, sessionToken });
     }
   }
@@ -46,9 +50,15 @@ export default function App() {
           `${BASE_URL}/authentication/pending-approval?token=${encodeURIComponent(token)}`,
           { headers: { 'ngrok-skip-browser-warning': 'true' } }
         );
-        const { pendingApproval } = await res.json();
+        const { pendingApproval } = await res.json() as {
+          pendingApproval?: { approvalId: string; username: string } | null;
+        };
         if (pendingApproval) {
-          setPendingBanner(pendingApproval);
+          // H2: pending-approval は sessionToken を返さない。claim で取得
+          const sessionToken = await claimSessionToken(BASE_URL, pendingApproval.approvalId, token);
+          if (sessionToken) {
+            setPendingBanner({ ...pendingApproval, sessionToken });
+          }
         }
       } catch {}
     });
@@ -60,7 +70,6 @@ export default function App() {
     });
 
     // 通知タップ時（バックグラウンド・killed state からの復帰、フォアグラウンドバナータップ）
-    // → 直接 ApprovalScreen
     responseListenerRef.current = Notifications.addNotificationResponseReceivedListener(
       (response) => {
         setPendingBanner(null);

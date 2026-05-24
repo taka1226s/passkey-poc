@@ -12,6 +12,7 @@ export type PendingApproval = {
   code: number;
   choices: number[];
   sessionToken: string;
+  failedAttempts: number;
   ipAddress?: string;
   userAgent?: string;
 };
@@ -40,21 +41,42 @@ export type CredentialRecord = {
 };
 
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
+const DEVICE_TOKEN_TTL_MS = 15 * 60 * 1000;
 
 const users = new Map<string, UserRecord>();
 const approvals = new Map<string, PendingApproval>();
 const challengeSessions = new Map<string, ChallengeSession>();
+const deviceTokens = new Map<string, { username: string; expiresAt: number }>();
 
-function generateCode(): number {
-  return 10 + (randomBytes(1)[0]! % 90);
+// 剰余バイアスなしの一様乱数 [0, max)
+function secureRandInt(max: number): number {
+  const limit = 256 - (256 % max);
+  while (true) {
+    const byte = randomBytes(1)[0]!;
+    if (byte < limit) return byte % max;
+  }
 }
 
-function generateChoices(correct: number): number[] {
-  const choices = new Set<number>([correct]);
-  while (choices.size < 3) {
-    choices.add(generateCode());
+// rejection sampling で 10-99 の一様乱数
+function generateCode(): number {
+  while (true) {
+    const byte = randomBytes(1)[0]!;
+    if (byte < 90) return 10 + byte;
   }
-  return [...choices].sort(() => randomBytes(1)[0]! - 128);
+}
+
+// Fisher-Yates シャッフルで 3 択を生成
+function generateChoices(correct: number): number[] {
+  const choices: number[] = [correct];
+  while (choices.length < 3) {
+    const c = generateCode();
+    if (!choices.includes(c)) choices.push(c);
+  }
+  for (let i = choices.length - 1; i > 0; i--) {
+    const j = secureRandInt(i + 1);
+    [choices[i], choices[j]] = [choices[j]!, choices[i]!];
+  }
+  return choices;
 }
 
 function generateSessionToken(): string {
@@ -69,7 +91,7 @@ export const store = {
   getOrCreateUser(username: string): UserRecord {
     if (!users.has(username)) {
       users.set(username, {
-        id: Buffer.from(username) as unknown as Uint8Array<ArrayBuffer>,
+        id: new Uint8Array(randomBytes(16)) as unknown as Uint8Array<ArrayBuffer>,
         username,
         credentials: [],
       });
@@ -138,6 +160,21 @@ export const store = {
     return users.get(username)?.pushToken;
   },
 
+  // デバイストークン: passkey 登録・承認時に発行し /push-token の認証に使用
+  createDeviceToken(username: string): string {
+    const token = randomBytes(32).toString('base64url');
+    deviceTokens.set(token, { username, expiresAt: Date.now() + DEVICE_TOKEN_TTL_MS });
+    return token;
+  },
+
+  validateAndConsumeDeviceToken(token: string): string | undefined {
+    const entry = deviceTokens.get(token);
+    if (!entry) return undefined;
+    deviceTokens.delete(token);
+    if (Date.now() > entry.expiresAt) return undefined;
+    return entry.username;
+  },
+
   createApproval(
     username: string,
     opts: { pushToken?: string; ipAddress?: string; userAgent?: string },
@@ -152,6 +189,7 @@ export const store = {
       code,
       choices: generateChoices(code),
       sessionToken: generateSessionToken(),
+      failedAttempts: 0,
       ipAddress: opts.ipAddress,
       userAgent: opts.userAgent,
     };
@@ -175,5 +213,12 @@ export const store = {
   updateApprovalStatus(approvalId: string, status: ApprovalStatus): void {
     const approval = approvals.get(approvalId);
     if (approval) approval.status = status;
+  },
+
+  incrementFailedAttempts(approvalId: string): number {
+    const approval = approvals.get(approvalId);
+    if (!approval) return 0;
+    approval.failedAttempts++;
+    return approval.failedAttempts;
   },
 };

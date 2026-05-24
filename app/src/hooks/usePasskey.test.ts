@@ -21,6 +21,11 @@ jest.mock('../api/webauthnClient', () => ({
   authenticationComplete: jest.fn(),
 }));
 
+jest.mock('../utils/notifications', () => ({
+  registerForPushNotifications: jest.fn().mockResolvedValue(null),
+  savePushTokenToServer: jest.fn().mockResolvedValue(undefined),
+}));
+
 import { Passkey } from 'react-native-passkey';
 import * as webauthnClient from '../api/webauthnClient';
 
@@ -32,7 +37,7 @@ describe('runRegistration', () => {
   it('成功時に success ステータスを返す', async () => {
     (webauthnClient.registrationBegin as jest.Mock).mockResolvedValue({ challenge: 'abc', sessionId: 'sid' });
     (Passkey.create as jest.Mock).mockResolvedValue({ id: 'cred-id', type: 'public-key' });
-    (webauthnClient.registrationComplete as jest.Mock).mockResolvedValue(true);
+    (webauthnClient.registrationComplete as jest.Mock).mockResolvedValue({ verified: true, deviceToken: 'dt-xxx' });
 
     const status = await runRegistration(BASE_URL, 'test-user');
 
@@ -43,7 +48,7 @@ describe('runRegistration', () => {
   it('verified=false のとき error ステータスを返す', async () => {
     (webauthnClient.registrationBegin as jest.Mock).mockResolvedValue({ challenge: 'abc', sessionId: 'sid' });
     (Passkey.create as jest.Mock).mockResolvedValue({ id: 'cred-id' });
-    (webauthnClient.registrationComplete as jest.Mock).mockResolvedValue(false);
+    (webauthnClient.registrationComplete as jest.Mock).mockResolvedValue({ verified: false });
 
     const status = await runRegistration(BASE_URL, 'test-user');
 
@@ -79,7 +84,18 @@ describe('runAuthentication', () => {
     expect(status.message).toContain('認証');
   });
 
-  it('approvalId なしのとき error ステータスを返す', async () => {
+  it('verified=true（直接モード）のとき success ステータスを返す', async () => {
+    (webauthnClient.authenticationBegin as jest.Mock).mockResolvedValue({ challenge: 'xyz', sessionId: 'sid' });
+    (Passkey.get as jest.Mock).mockResolvedValue({ id: 'cred-id' });
+    (webauthnClient.authenticationComplete as jest.Mock).mockResolvedValue({ verified: true });
+
+    const status = await runAuthentication(BASE_URL, 'test-user');
+
+    expect(status.type).toBe('success');
+    expect(status.message).toContain('クロスデバイス');
+  });
+
+  it('approvalId も verified もないとき error ステータスを返す', async () => {
     (webauthnClient.authenticationBegin as jest.Mock).mockResolvedValue({ challenge: 'xyz', sessionId: 'sid' });
     (Passkey.get as jest.Mock).mockResolvedValue({ id: 'cred-id' });
     (webauthnClient.authenticationComplete as jest.Mock).mockResolvedValue({});

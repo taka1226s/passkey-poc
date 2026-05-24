@@ -35,15 +35,20 @@ export async function registerForPushNotifications(): Promise<string | null> {
   }
 }
 
-export async function savePushTokenToServer(username: string, token: string): Promise<void> {
-  console.log('[notifications] サーバーにトークン登録:', username, token);
+// deviceToken: passkey 登録・承認後にサーバーから発行される認証トークン（H1）
+export async function savePushTokenToServer(
+  username: string,
+  token: string,
+  deviceToken: string,
+): Promise<void> {
+  console.log('[notifications] サーバーにトークン登録:', username);
   const res = await fetch(`${BASE_URL}/push-token`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'ngrok-skip-browser-warning': 'true',
     },
-    body: JSON.stringify({ username, token }),
+    body: JSON.stringify({ username, token, deviceToken }),
   });
   const body = await res.json();
   console.log('[notifications] トークン登録レスポンス:', body);

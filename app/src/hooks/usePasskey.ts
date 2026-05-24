@@ -6,6 +6,7 @@ import {
   authenticationBegin,
   authenticationComplete,
 } from '../api/webauthnClient';
+import { registerForPushNotifications, savePushTokenToServer } from '../utils/notifications';
 
 export type Status = {
   type: 'idle' | 'success' | 'error';
@@ -28,10 +29,18 @@ export async function runRegistration(
   const rawOptions = await registrationBegin(baseUrl, username);
   const { hints: _hints, extensions: _ext, sessionId, ...options } = rawOptions as Record<string, unknown> & { sessionId: string };
   const credential = await Passkey.create(options as never);
-  const verified = await registrationComplete(baseUrl, username, credential as never, sessionId);
-  return verified
-    ? { type: 'success', message: '登録が完了しました' }
-    : { type: 'error', message: '登録の検証に失敗しました' };
+  const result = await registrationComplete(baseUrl, username, credential as never, sessionId);
+  if (!result.verified) {
+    return { type: 'error', message: '登録の検証に失敗しました' };
+  }
+  // H1: 登録直後に発行された deviceToken で push token を認証付き登録
+  if (result.deviceToken) {
+    const pushToken = await registerForPushNotifications();
+    if (pushToken) {
+      await savePushTokenToServer(username, pushToken, result.deviceToken).catch(() => {});
+    }
+  }
+  return { type: 'success', message: '登録が完了しました' };
 }
 
 export async function runAuthentication(
@@ -42,9 +51,13 @@ export async function runAuthentication(
   const { sessionId, ...options } = rawOptions as Record<string, unknown> & { sessionId: string };
   const credential = await Passkey.get(options as never);
   const result = await authenticationComplete(baseUrl, credential as never, sessionId);
-  return result.approvalId
-    ? { type: 'success', message: '認証完了。スマートフォンアプリで承認してください' }
-    : { type: 'error', message: '認証に失敗しました' };
+  if (result.approvalId) {
+    return { type: 'success', message: '認証完了。スマートフォンアプリで承認してください' };
+  }
+  if (result.verified) {
+    return { type: 'success', message: 'クロスデバイス認証が完了しました' };
+  }
+  return { type: 'error', message: '認証に失敗しました' };
 }
 
 export function usePasskey(baseUrl: string): UsePasskeyResult {

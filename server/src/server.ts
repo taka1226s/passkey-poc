@@ -43,9 +43,18 @@ app.get('/health', (_req, res) => {
 });
 
 app.post('/push-token', (req, res) => {
-  const { username, token } = req.body as { username?: string; token?: string };
-  if (!username || !token) {
-    res.status(400).json({ error: 'username と token は必須です' });
+  const { username, token, deviceToken } = req.body as {
+    username?: string;
+    token?: string;
+    deviceToken?: string;
+  };
+  if (!username || !token || !deviceToken) {
+    res.status(400).json({ error: 'username、token、deviceToken は必須です' });
+    return;
+  }
+  const validUsername = store.validateAndConsumeDeviceToken(deviceToken);
+  if (!validUsername || validUsername !== username) {
+    res.status(403).json({ error: 'deviceToken が無効または期限切れです' });
     return;
   }
   store.getOrCreateUser(username);
@@ -127,6 +136,7 @@ app.post('/registration/complete', async (req, res) => {
 
   const session = store.getChallengeSession(sessionId);
   if (!session || session.username !== username) {
+    store.deleteChallengeSession(sessionId);
     res.status(400).json({ error: 'チャレンジが無効または期限切れです' });
     return;
   }
@@ -161,7 +171,8 @@ app.post('/registration/complete', async (req, res) => {
       transports: credential.response.transports ?? [],
     });
 
-    res.json({ verified: true });
+    const deviceToken = store.createDeviceToken(username);
+    res.json({ verified: true, deviceToken });
   } catch (err) {
     res.status(400).json({ error: '登録の検証に失敗しました' });
   }
@@ -213,6 +224,12 @@ app.post('/authentication/complete', async (req, res) => {
     return;
   }
 
+  // M3: begin で username を指定した場合、credential 所有者が一致するか検証
+  if (session.username && session.username !== user.username) {
+    res.status(400).json({ error: '認証情報のユーザーが一致しません' });
+    return;
+  }
+
   const storedCred = user.credentials.find((c) => c.id === credential.id)!;
 
   try {
@@ -250,12 +267,19 @@ app.post('/authentication/complete', async (req, res) => {
     store.recordAuthentication(user.username);
 
     const pushToken = store.getPushToken(user.username);
+
+    // push token がない場合は 動線 B（直接完了）— approval は作らない
+    if (!pushToken) {
+      res.json({ verified: true });
+      return;
+    }
+
     const ipAddress = (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim()
       ?? req.socket.remoteAddress;
     const userAgent = req.headers['user-agent'];
 
     const approval = store.createApproval(user.username, {
-      pushToken: pushToken ?? undefined,
+      pushToken,
       ipAddress,
       userAgent,
     });
@@ -265,9 +289,7 @@ app.post('/authentication/complete', async (req, res) => {
       if (a?.status === 'pending') store.updateApprovalStatus(approval.id, 'expired');
     }, APPROVAL_TIMEOUT_MS);
 
-    if (pushToken) {
-      sendApprovalPushNotification(pushToken, user.username, approval.id, approval.sessionToken).catch(() => {});
-    }
+    sendApprovalPushNotification(pushToken, user.username, approval.id).catch(() => {});
 
     res.json({ approvalId: approval.id, code: approval.code });
   } catch (err) {
@@ -321,9 +343,23 @@ app.get('/authentication/pending-approval', (req, res) => {
     pendingApproval: {
       approvalId: approval.id,
       username: approval.username,
-      sessionToken: approval.sessionToken,
     },
   });
+});
+
+// push token 所持を証明して sessionToken を取得（push data に sessionToken を含めない設計）
+app.post('/authentication/claim', (req, res) => {
+  const { approvalId, pushToken } = req.body as { approvalId?: string; pushToken?: string };
+  if (!approvalId || !pushToken) {
+    res.status(400).json({ error: 'approvalId と pushToken は必須です' });
+    return;
+  }
+  const approval = store.getApproval(approvalId);
+  if (!approval || !approval.pushToken || approval.pushToken !== pushToken || approval.status !== 'pending') {
+    res.status(404).json({ error: '承認リクエストが見つかりません' });
+    return;
+  }
+  res.json({ sessionToken: approval.sessionToken });
 });
 
 app.get('/authentication/approval-status', (req, res) => {
@@ -360,12 +396,15 @@ app.post('/authentication/approve', (req, res) => {
     return;
   }
   if (selectedCode !== approval.code) {
-    res.status(400).json({ error: 'コードが一致しません' });
+    store.incrementFailedAttempts(approvalId);
+    store.updateApprovalStatus(approvalId, 'rejected');
+    res.status(400).json({ error: 'コードが一致しません。セキュリティのためリクエストを無効化しました' });
     return;
   }
   store.updateApprovalStatus(approvalId, 'approved');
   store.recordAuthentication(approval.username);
-  res.json({ ok: true });
+  const deviceToken = store.createDeviceToken(approval.username);
+  res.json({ ok: true, deviceToken });
 });
 
 app.post('/authentication/reject', (req, res) => {
@@ -506,6 +545,9 @@ app.get('/', (_req, res) => {
           showCode(result.code);
           setStatus('スマートフォンアプリで数字を選択して承認してください...', 'waiting');
           pollApproval(result.approvalId);
+        } else if (result.verified) {
+          document.getElementById('btn').disabled = false;
+          setStatus('認証完了（直接モード）', 'approved');
         } else {
           document.getElementById('btn').disabled = false;
           setStatus('エラー: ' + JSON.stringify(result), 'rejected');
@@ -524,7 +566,6 @@ async function sendApprovalPushNotification(
   token: string,
   username: string,
   approvalId: string,
-  sessionToken: string,
 ): Promise<void> {
   console.log('[push] 承認リクエスト送信開始:', token);
   const res = await fetch('https://exp.host/--/api/v2/push/send', {
@@ -533,8 +574,8 @@ async function sendApprovalPushNotification(
     body: JSON.stringify({
       to: token,
       title: 'ログインリクエスト',
-      body: `${username} としてのログインリクエストがあります`,
-      data: { approvalId, username, sessionToken },
+      body: 'ログインリクエストがあります',
+      data: { approvalId, username },
       priority: 'high',
       channelId: 'default',
     }),

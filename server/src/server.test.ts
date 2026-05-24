@@ -148,7 +148,7 @@ describe('C3: QRLjacking 防御 - push approval セキュリティ', () => {
     expect(res.status).toBe(404);
   });
 
-  it('B6: /approve は誤った selectedCode で呼ぶと 400 を返す', async () => {
+  it('B6: /approve は誤った selectedCode で 400 を返し approval を rejected にする（C1: 試行制限）', async () => {
     const approval = setupApproval();
     const wrongCode = approval.code === 10 ? 11 : approval.code - 1;
     const res = await request(app)
@@ -156,15 +156,31 @@ describe('C3: QRLjacking 防御 - push approval セキュリティ', () => {
       .send({ approvalId: approval.id, sessionToken: approval.sessionToken, selectedCode: wrongCode });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/コードが一致しません/);
+    // C1: 1 回の誤答で即 rejected にして再試行を防ぐ
+    expect(store.getApproval(approval.id)!.status).toBe('rejected');
   });
 
-  it('B3+B6: 正しい sessionToken + selectedCode で /approve が成功する', async () => {
+  it('C1: rejected になった approval は再度 /approve しても 409 を返す', async () => {
+    const approval = setupApproval();
+    const wrongCode = approval.code === 10 ? 11 : approval.code - 1;
+    await request(app)
+      .post('/authentication/approve')
+      .send({ approvalId: approval.id, sessionToken: approval.sessionToken, selectedCode: wrongCode });
+    // 再試行（今度は正解コードで）しても通らない
+    const res = await request(app)
+      .post('/authentication/approve')
+      .send({ approvalId: approval.id, sessionToken: approval.sessionToken, selectedCode: approval.code });
+    expect(res.status).toBe(409);
+  });
+
+  it('B3+B6: 正しい sessionToken + selectedCode で /approve が成功し deviceToken を返す', async () => {
     const approval = setupApproval();
     const res = await request(app)
       .post('/authentication/approve')
       .send({ approvalId: approval.id, sessionToken: approval.sessionToken, selectedCode: approval.code });
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
+    expect(typeof res.body.deviceToken).toBe('string');
     expect(store.getApproval(approval.id)!.status).toBe('approved');
   });
 
@@ -199,6 +215,46 @@ describe('C3: QRLjacking 防御 - push approval セキュリティ', () => {
       .send({ approvalId: approval.id, sessionToken: approval.sessionToken });
     expect(res.status).toBe(200);
     expect(store.getApproval(approval.id)!.status).toBe('rejected');
+  });
+
+  it('H2: /pending-approval は sessionToken を返さない（push data に含めない設計）', async () => {
+    const uniqueToken = 'ExponentPushToken[h2-pending-unique]';
+    const approval = store.createApproval('victim-user', {
+      pushToken: uniqueToken,
+      ipAddress: '1.2.3.4',
+    });
+    const res = await request(app)
+      .get(`/authentication/pending-approval?token=${encodeURIComponent(uniqueToken)}`);
+    expect(res.status).toBe(200);
+    expect(res.body.pendingApproval).toBeDefined();
+    expect(res.body.pendingApproval.approvalId).toBe(approval.id);
+    expect(res.body.pendingApproval.sessionToken).toBeUndefined();
+  });
+
+  it('H2: /claim は pushToken が一致すれば sessionToken を返す', async () => {
+    const uniqueToken = 'ExponentPushToken[h2-claim-unique]';
+    const approval = store.createApproval('victim-user', { pushToken: uniqueToken });
+    const res = await request(app)
+      .post('/authentication/claim')
+      .send({ approvalId: approval.id, pushToken: uniqueToken });
+    expect(res.status).toBe(200);
+    expect(res.body.sessionToken).toBe(approval.sessionToken);
+  });
+
+  it('H2: /claim は pushToken が一致しなければ 404 を返す', async () => {
+    const approval = setupApproval();
+    const res = await request(app)
+      .post('/authentication/claim')
+      .send({ approvalId: approval.id, pushToken: 'wrong-token' });
+    expect(res.status).toBe(404);
+  });
+
+  it('H2: /claim は pushToken のない approval に対して 404 を返す', async () => {
+    const approval = store.createApproval('no-push-user', {}); // pushToken なし
+    const res = await request(app)
+      .post('/authentication/claim')
+      .send({ approvalId: approval.id, pushToken: 'any-token' });
+    expect(res.status).toBe(404);
   });
 
   it('B3: /approval-info は sessionToken なしで呼ぶと 400 を返す', async () => {
@@ -280,6 +336,53 @@ describe('C3: QRLjacking 防御 - push approval セキュリティ', () => {
   });
 });
 
+// ---- M3: session.username バインディング ----
+
+describe('M3: session.username バインディング', () => {
+  it('begin で指定した username と complete の credential 所有者が一致しなければ 400', async () => {
+    // alice のセッションを作成
+    const sessionId = store.createChallengeSession('dummy-challenge', 'alice');
+
+    // bob のクレデンシャルで complete を呼ぶ（credential.id が bob のもの）
+    store.getOrCreateUser('bob-m3');
+    store.addCredential('bob-m3', {
+      id: 'bob-m3-cred',
+      publicKey: Buffer.from('dummy') as unknown as Uint8Array<ArrayBuffer>,
+      counter: 0,
+      deviceType: 'singleDevice',
+      backedUp: false,
+      transports: ['internal'],
+    });
+
+    const res = await request(app)
+      .post('/authentication/complete')
+      .send({ credential: { id: 'bob-m3-cred', type: 'public-key' }, sessionId });
+    // alice session で bob credential → 400 or verifyAuthenticationResponse がエラーで 400
+    // simplewebauthn の検証失敗 or session.username mismatch のいずれかで 400
+    expect(res.status).toBe(400);
+  });
+});
+
+// ---- M4: 登録セッション不一致時の削除 ----
+
+describe('M4: 登録セッション username 不一致時に即時削除', () => {
+  it('username 不一致で registration/complete を呼んだ後、同じ sessionId は使えない', async () => {
+    const sessionId = store.createChallengeSession('reg-challenge', 'correct-user');
+
+    // wrong user で complete を試みる
+    await request(app)
+      .post('/registration/complete')
+      .send({ username: 'wrong-user', credential: {}, sessionId });
+
+    // 同じ sessionId で再試行しても既に削除済み
+    const res = await request(app)
+      .post('/registration/complete')
+      .send({ username: 'correct-user', credential: {}, sessionId });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/チャレンジが無効/);
+  });
+});
+
 // ---- C2: BLE / transport 非依存性 ----
 
 describe('C2: サーバーは BLE transport を要求しない', () => {
@@ -336,19 +439,48 @@ describe('C2: サーバーは BLE transport を要求しない', () => {
 // ---- push-token ----
 
 describe('POST /push-token', () => {
-  it('username と token を渡すと保存される', async () => {
+  it('H1: deviceToken なしで呼ぶと 400 を返す', async () => {
     const res = await request(app)
       .post('/push-token')
       .send({ username: 'push-test-user', token: 'ExponentPushToken[test]' });
-    expect(res.status).toBe(200);
-    expect(res.body.ok).toBe(true);
-    expect(store.getPushToken('push-test-user')).toBe('ExponentPushToken[test]');
+    expect(res.status).toBe(400);
   });
 
-  it('token が空のとき 400 を返す', async () => {
+  it('H1: 無効な deviceToken で呼ぶと 403 を返す', async () => {
     const res = await request(app)
       .post('/push-token')
-      .send({ username: 'push-test-user' });
-    expect(res.status).toBe(400);
+      .send({ username: 'push-test-user', token: 'ExponentPushToken[test]', deviceToken: 'invalid' });
+    expect(res.status).toBe(403);
+  });
+
+  it('H1: 有効な deviceToken で呼ぶと push token が保存される', async () => {
+    const deviceToken = store.createDeviceToken('push-test-user-h1');
+    store.getOrCreateUser('push-test-user-h1');
+    const res = await request(app)
+      .post('/push-token')
+      .send({ username: 'push-test-user-h1', token: 'ExponentPushToken[h1-test]', deviceToken });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(store.getPushToken('push-test-user-h1')).toBe('ExponentPushToken[h1-test]');
+  });
+
+  it('H1: username が一致しない deviceToken で呼ぶと 403 を返す', async () => {
+    const deviceToken = store.createDeviceToken('other-user');
+    const res = await request(app)
+      .post('/push-token')
+      .send({ username: 'different-user', token: 'ExponentPushToken[test]', deviceToken });
+    expect(res.status).toBe(403);
+  });
+
+  it('H1: deviceToken は一度消費すると再利用できない', async () => {
+    const deviceToken = store.createDeviceToken('one-time-user');
+    store.getOrCreateUser('one-time-user');
+    await request(app)
+      .post('/push-token')
+      .send({ username: 'one-time-user', token: 'ExponentPushToken[first]', deviceToken });
+    const res = await request(app)
+      .post('/push-token')
+      .send({ username: 'one-time-user', token: 'ExponentPushToken[second]', deviceToken });
+    expect(res.status).toBe(403);
   });
 });

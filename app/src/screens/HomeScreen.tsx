@@ -12,7 +12,7 @@ import { QRScannerScreen } from './QRScannerScreen';
 import { AuthWaitingScreen } from './AuthWaitingScreen';
 import { ApprovalScreen } from './ApprovalScreen';
 import { BASE_URL } from '../config';
-import { registerForPushNotifications, savePushTokenToServer } from '../utils/notifications';
+import { registerForPushNotifications } from '../utils/notifications';
 
 type ApprovalRequest = { approvalId: string; username: string; sessionToken: string };
 
@@ -40,16 +40,11 @@ export function HomeScreen({
     registerForPushNotifications().catch(() => {});
   }, []);
 
-  const handleUsernameBlur = useCallback(async () => {
+  // H1: push token のサーバー登録は passkey 登録後に deviceToken と一緒に行う
+  // blur 時は通知権限のリクエストのみ
+  const handleUsernameBlur = useCallback(() => {
     if (!username.trim()) return;
-    try {
-      const token = await registerForPushNotifications();
-      if (token) {
-        await savePushTokenToServer(username.trim(), token);
-      }
-    } catch {
-      // トークン登録失敗は通知なしで継続
-    }
+    registerForPushNotifications().catch(() => {});
   }, [username]);
 
   if (approvalRequest) {
