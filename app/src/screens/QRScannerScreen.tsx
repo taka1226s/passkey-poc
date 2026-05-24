@@ -32,7 +32,8 @@ export function QRScannerScreen({ username, onClose, onSuccess }: Props) {
     const timer = setInterval(async () => {
       try {
         const res = await fetch(
-          `${BASE_URL}/authentication/status?username=${encodeURIComponent(username)}&since=${scannedAtRef.current}`
+          `${BASE_URL}/authentication/status?username=${encodeURIComponent(username)}&since=${scannedAtRef.current}`,
+          { headers: { 'ngrok-skip-browser-warning': 'true' } }
         );
         const { authenticated } = await res.json();
         if (authenticated) {

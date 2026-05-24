@@ -10,10 +10,12 @@ Android / iOS 実機でパスキー（FIDO2/WebAuthn）認証を検証するた�
 |----|------|:-------:|:---:|
 | AC-1 | アプリでパスキーを登録する | 完了 | 未着手 |
 | AC-2 | 同一デバイスでパスキー認証する | 完了 | 未着手 |
-| AC-3 | PC ブラウザから QR コード経由で認証する（CTAP2 Hybrid） | 完了 | 未着手 |
+| AC-3 | PC ブラウザから QR コード経由で認証する（CTAP2 Hybrid） | 完了※ | 未着手 |
 | AC-4 | Mac Safari から iPhone の Continuity 経由で認証する | N/A | 未着手 |
+| AC-5 | Web パスキー認証 → アプリで最終承認（push approval） | 完了 | 未着手 |
 
 > AC-4 は Apple デバイス間専用フロー（Continuity）で iOS のみ対象。
+> ※ AC-3：標準カメラ経由は credential 送信は成功するが OS ダイアログが閉じない環境問題あり（webauthn.io でも再現）。アプリ内 QR スキャナー経由は問題なし。
 
 ---
 
@@ -32,6 +34,7 @@ passkey-poc/
 |----|------|
 | アプリ | React Native 0.81 / Expo 54 / TypeScript |
 | パスキー操作 | react-native-passkey 3.3.3 |
+| プッシュ通知 | expo-notifications / Expo Push Notifications API |
 | サーバー | Node.js / Express 5 / TypeScript |
 | WebAuthn 検証 | @simplewebauthn/server 13 |
 | HTTPS トンネル | ngrok static domain（Android / iOS 共通・固定 URL）|
@@ -137,8 +140,9 @@ npm run dev
 
 ```
 ────────────────────────────────────────────────────────────
-  RPID / クロスデバイス認証テスト URL
-  https://your-name.ngrok-free.app
+  Passkey PoC 開発サーバー
+  RPID : your-name.ngrok-free.app
+  URL  : https://your-name.ngrok-free.app
 ────────────────────────────────────────────────────────────
 ```
 
@@ -148,31 +152,46 @@ npm run dev
 
 ## 使い方
 
-### AC-1 / AC-1（iOS）：パスキー登録
+### AC-1：パスキー登録（Android / iOS 共通）
 
 1. アプリを開く
 2. ユーザー名を入力して「パスキーを登録」をタップ
 3. 生体認証（Android: 指紋 / 顔認証、iOS: Face ID / Touch ID）を完了する
 4. 「登録が完了しました」と表示されれば成功
 
-### AC-2 / AC-2（iOS）：同一デバイス認証
+### AC-2：同一デバイス認証（Android / iOS 共通）
 
 1. AC-1 と同じユーザー名を入力して「パスキーでサインイン」をタップ
 2. 生体認証を完了する
 3. 「認証が完了しました」と表示されれば成功
 
-### AC-3 / AC-3（iOS）：クロスデバイス認証（CTAP2 Hybrid）
+### AC-3：クロスデバイス認証（CTAP2 Hybrid）（Android / iOS 共通）
 
-Android・iOS どちらをスキャン端末にしても同じ手順です。
+Android・iOS どちらをスキャン端末にしても同じ手順です。本 PoC では「アプリの介在を必須化する」設計のため、Web ブラウザ側のパスキー認証は単独で完結せず、必ずアプリでの承認が必要です（AC-5 参照）。
 
-1. PC の Chrome でバナーに表示された ngrok URL を開く
-2. AC-1 で登録したユーザー名を入力して「パスキーでサインイン」をクリック
-3. ブラウザに QR コードが表示される
-4. スマートフォンのカメラアプリで QR コードをスキャンする
-5. 生体認証を完了する
-6. ブラウザに `{"verified": true}` が表示されれば成功
+**動線 A: 標準カメラ + push approval**（標準カメラで QR スキャン → アプリで承認）
 
-**アプリ内 QR スキャナー経由**（認証完了後にアプリへ自動遷移）
+このフローは AC-5（push approval）と AC-3 の組み合わせです。
+
+1. アプリを起動してユーザー名を入力し、キーボードを閉じる（プッシュトークンがサーバに登録される）
+2. アプリを閉じてよい
+3. PC の Chrome で ngrok URL を開き、同じユーザー名で「パスキーでサインイン」をクリック
+4. QR コードが表示される
+5. スマートフォンの標準カメラで QR コードをスキャンする
+6. 生体認証を完了する
+7. PC ブラウザに 2 桁のコードが大きく表示され、承認待ち状態になる
+8. アプリに「ログインリクエスト」プッシュ通知バナーが届く
+9. バナーをタップ（またはアプリを手動起動）すると承認画面が開く
+10. IP・UA・時刻・カウントダウンと 3 つの数字ボタンが表示される
+11. PC ブラウザの数字と一致するボタンをタップ → 生体認証
+12. PC ブラウザが「ログイン成功！ ○○ としてサインインしました。」を表示する
+
+> 動線 A は Android で動作確認済み。iOS は EAS Build が必要。
+> 通知が届かない・タップしない場合でも、アプリを手動で開けば pending な承認リクエストを自動検出して承認画面が出ます。
+
+> **既知の環境制約**: 標準カメラ経由の CTAP2 Hybrid 認証では、生体認証完了後もスマホ側の OS ダイアログが閉じない場合があります（PC へのクローズ ACK が届かない現象）。webauthn.io でも同様に再現する環境固有の問題で、当 PoC のコードでは解決できません。credential 自体は PC に届いておりサーバー検証も成功する（push 通知が届く）ため、フロー全体は機能します。
+
+**動線 B: アプリ内 QR スキャナー経由**（アプリだけで完結。push approval を経由しない）
 
 1. アプリでユーザー名を入力する（スキャン前に必須）
 2. 「QR でサインイン（別デバイス）」をタップ
@@ -181,6 +200,8 @@ Android・iOS どちらをスキャン端末にしても同じ手順です。
 5. 「生体認証を完了してください」画面が表示される
 6. 生体認証を完了する
 7. アプリに戻り「クロスデバイス認証が完了しました」と表示される
+
+> 動線 B はアプリが直接 FIDO:// URI を Credential Manager へ渡し、認証完了をポーリングで検知する独自フローです（push approval は経由しません）。
 
 ### AC-4：Mac Safari + iPhone Continuity（iOS 専用）
 
@@ -360,15 +381,15 @@ sequenceDiagram
     participant CM as パスキー API<br/>Android: Credential Manager<br/>iOS: iCloud Keychain
     participant Server as Express サーバー
 
-    Note over Server: RPID = Cloudflare URL（Android）<br/>     = ngrok URL（iOS・固定）
+    Note over Server: RPID = ngrok 固定 URL（Android / iOS 共通）
 
     User->>App: ユーザー名入力 → 「パスキーを登録」タップ
 
     rect rgb(220, 235, 255)
         Note over App,Server: ① チャレンジ取得（Android / iOS 共通）
         App->>Server: POST /registration/begin { username }
-        Note over Server: ユーザー作成 or 取得<br/>ランダムチャレンジ生成・セッションに保存
-        Server-->>App: options { challenge, rpID,<br/>userName, userID, authenticatorSelection }
+        Note over Server: ユーザー作成 or 取得<br/>ランダムチャレンジ生成・sessionId に紐付けて保存（TTL 5分）
+        Server-->>App: { ...options, sessionId }
     end
 
     rect rgb(220, 255, 220)
@@ -391,13 +412,8 @@ sequenceDiagram
 
     rect rgb(255, 245, 220)
         Note over App,Server: ③ サーバー側検証・保存
-        App->>Server: POST /registration/complete { username, credential }
-        alt Android
-            Note over Server: origin 検証: android:apk-key-hash:<hash>
-        else iOS
-            Note over Server: origin 検証: https://<RPID><br/>（ORIGIN_WEB として allowedOrigins に含む）
-        end
-        Note over Server: challenge / rpID 検証<br/>公開鍵・カウンターを DB 保存
+        App->>Server: POST /registration/complete { username, credential, sessionId }
+        Note over Server: sessionId でチャレンジを取得・消費（TTL 検証）<br/>origin・rpID 検証<br/>公開鍵・カウンターを保存
         Server-->>App: { verified: true }
     end
 
@@ -438,17 +454,14 @@ sequenceDiagram
 
     rect rgb(255, 245, 220)
         Note over App,Server: ③ サーバー側署名検証
-        App->>Server: POST /authentication/complete { username, credential }
-        alt Android
-            Note over Server: origin 検証: android:apk-key-hash:<hash>
-        else iOS
-            Note over Server: origin 検証: https://<RPID>
-        end
-        Note over Server: challenge / rpID 検証<br/>保存済み公開鍵で署名を検証<br/>カウンター単調増加を確認（リプレイ攻撃防止）<br/>lastAuthenticatedAt を記録
-        Server-->>App: { verified: true }
+        App->>Server: POST /authentication/complete { credential, sessionId }
+        Note over Server: sessionId でチャレンジを取得・消費<br/>クレデンシャル ID からユーザーを逆引き<br/>origin 検証・counter 巻き戻し確認<br/>approvalId・code・sessionToken を生成
+        Server->>Server: push 通知送信（push トークン登録済みの場合）
+        Server-->>App: { approvalId, code }
     end
 
-    App-->>User: 「認証が完了しました」
+    Note over App: push 通知またはアプリ内の承認画面で最終承認（AC-5 フロー）
+    App-->>User: 「認証完了。スマートフォンアプリで承認してください」
 ```
 
 ### AC-3：クロスデバイス認証（CTAP2 Hybrid）
@@ -498,13 +511,13 @@ sequenceDiagram
     end
 
     rect rgb(255, 245, 220)
-        Note over Browser,Server: ④ サーバー側検証（Android / iOS 共通）
-        Browser->>Server: POST /authentication/complete { username, credential }
-        Note over Server: challenge / origin / rpID 検証<br/>origin = https://<RPID>（Web origin として検証）<br/>公開鍵で署名を検証・カウンター確認
-        Server-->>Browser: { verified: true }
+        Note over Browser,Server: ④ サーバー側検証 → push approval 開始（Android / iOS 共通）
+        Browser->>Server: POST /authentication/complete { credential, sessionId }
+        Note over Server: sessionId でチャレンジ取得・消費<br/>クレデンシャル ID からユーザーを逆引き<br/>origin = https://<RPID>（Web origin として検証）<br/>公開鍵で署名を検証・カウンター確認<br/>approvalId / code / sessionToken を生成・push 通知送信
+        Server-->>Browser: { approvalId, code }
     end
 
-    Browser-->>User: 認証完了表示
+    Note over Browser: code を大きく表示し approval-status をポーリング<br/>→ AC-5 フローでアプリ承認後にログイン完了
 ```
 
 ### AC-3（アプリ内 QR スキャナー経由）
@@ -512,8 +525,8 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     actor User as ユーザー
-    participant App as Android アプリ
-    participant CM as Credential Manager
+    participant App as アプリ<br/>（Android / iOS）
+    participant CM as パスキー API<br/>Android: Credential Manager<br/>iOS: iCloud Keychain
     participant GTS as Google Tunnel Server
     participant Browser as PC Chrome
     participant Server as Express サーバー
@@ -547,9 +560,9 @@ sequenceDiagram
 
     rect rgb(255, 245, 220)
         Note over Browser,Server: ④ PC ブラウザ → サーバー検証
-        Browser->>Server: POST /authentication/complete { username, credential }
-        Note over Server: 署名検証・カウンター確認<br/>lastAuthenticatedAt = Date.now() を記録
-        Server-->>Browser: { verified: true }
+        Browser->>Server: POST /authentication/complete { credential, sessionId }
+        Note over Server: sessionId でチャレンジ取得・消費<br/>署名検証・カウンター確認<br/>lastAuthenticatedAt = Date.now() を記録<br/>approvalId / code / sessionToken を生成（push 通知送信）
+        Server-->>Browser: { approvalId, code }
     end
 
     rect rgb(235, 220, 255)
@@ -559,6 +572,94 @@ sequenceDiagram
         Server-->>App: { authenticated: true }
         Note over App: clearInterval / onSuccess() 呼び出し
         App-->>User: 「クロスデバイス認証が完了しました」
+    end
+```
+
+### AC-5：Web パスキー認証 + アプリで承認（push approval）
+
+Web 側のパスキー認証だけではログインを完了させず、スマホアプリで最終承認するフローです。**Number Matching**（ブラウザに表示された 2 桁の数字をアプリで選択）と生体認証を組み合わせ、承認デバイスの所有者を確認します。
+
+```mermaid
+sequenceDiagram
+    actor User as ユーザー
+    participant App as アプリ
+    participant Browser as PC Chrome
+    participant Server as Express サーバー
+    participant GTS as Google Tunnel Server<br/>（caBLE relay）
+    participant CM as Android Credential Manager
+    participant ExpoPN as Expo Push<br/>Notifications API
+
+    Note over App,Server: 事前：アプリでユーザー名入力 → プッシュトークン登録済み<br/>（POST /push-token）
+
+    rect rgb(220, 235, 255)
+        Note over Browser,Server: ① パスキー認証チャレンジ取得（usernameless 対応）
+        Browser->>Server: POST /authentication/begin { username? }
+        Note over Server: challengeSession 生成（TTL 5分）<br/>allowCredentials: username があれば対象クレデンシャル、なければ空
+        Server-->>Browser: { ...options, sessionId }
+        Browser-->>User: QR コード表示
+    end
+
+    rect rgb(255, 220, 220)
+        Note over User,CM: ② 標準カメラでスキャン・署名（CTAP2 Hybrid）
+        User->>CM: 標準カメラで FIDO:// QR をスキャン
+        CM->>GTS: caBLE ハンドシェイク
+        CM->>User: 生体認証プロンプト
+        User-->>CM: 認証
+        CM->>GTS: 署名済みクレデンシャル（E2E 暗号化）
+        GTS-->>Browser: クレデンシャル転送
+    end
+
+    rect rgb(255, 245, 220)
+        Note over Browser,Server: ③ サーバー側検証 → Number Matching コード生成 → 承認待ち
+        Browser->>Server: POST /authentication/complete { credential, sessionId }
+        Note over Server: sessionId でチャレンジ取得・消費（TTL 検証）<br/>クレデンシャル ID からユーザーを逆引き（A4）<br/>counter 巻き戻し確認（A6）<br/>code = rand(10-99), choices = 3択シャッフル<br/>sessionToken = random(32 bytes)<br/>approvalId, code, sessionToken を生成<br/>IP・UA を記録 / 5分後に expired
+        Server->>ExpoPN: POST /push/send<br/>{ data: { approvalId, username, sessionToken } }
+        Server-->>Browser: { approvalId, code }
+        Note over Browser: code を大きく表示<br/>pollApproval(approvalId) 開始（1.5 秒間隔）
+    end
+
+    rect rgb(220, 255, 220)
+        Note over ExpoPN,App: ④ アプリ側で承認画面表示（バナー → タップ）
+        ExpoPN->>CM: FCM 経由で配信
+        CM->>App: 通知バナーを表示（フォアグラウンド時）
+        User->>App: バナーをタップ（またはアプリ起動）
+        App->>Server: GET /authentication/approval-info<br/>?approvalId=&sessionToken=
+        Server-->>App: { choices: [n1,n2,n3], ipAddress, userAgent, createdAt }
+        App-->>User: 3択ボタン・IP/UA/時刻・カウントダウン表示
+    end
+
+    rect rgb(235, 220, 255)
+        Note over App,Server: ⑤ Number Matching + 生体認証 → ログイン完了
+        Note over User: ブラウザの数字と一致する選択肢を確認
+        User->>App: 正しい数字をタップ
+        App->>App: expo-local-authentication で生体認証
+        App->>Server: POST /authentication/approve<br/>{ approvalId, sessionToken, selectedCode }
+        Note over Server: sessionToken 検証<br/>selectedCode === code 検証<br/>approval.status = "approved"
+        Server-->>App: { ok: true }
+        Note over Browser: ポーリングで status="approved" 検知
+        Browser-->>User: 「ログイン成功！ ○○ としてサインインしました」
+    end
+```
+
+#### cold start / 通知不達への対応
+
+通知が OS に届かない場合（cold start、バッテリー最適化等）、ユーザーがアプリを手動で開いたタイミングで pending な承認を検出します。
+
+```mermaid
+sequenceDiagram
+    actor User as ユーザー
+    participant App as アプリ
+    participant Server as Express サーバー
+
+    User->>App: アプリを手動で起動
+    App->>App: registerForPushNotifications() で<br/>自分の Expo Push Token を取得
+    App->>Server: GET /authentication/pending-approval?token=...
+    alt pending な承認あり
+        Server-->>App: { pendingApproval: { approvalId, username, sessionToken } }
+        App-->>User: ホーム画面上部にオレンジバナー表示（D8）<br/>バナーをタップ → 承認画面（Number Matching 含む）
+    else なし
+        Server-->>App: { pendingApproval: null }
+        App-->>User: ホーム画面
     end
 ```
 
@@ -601,13 +702,13 @@ sequenceDiagram
     end
 
     rect rgb(255, 245, 220)
-        Note over Safari,Server: ④ サーバー側検証
-        Safari->>Server: POST /authentication/complete { username, credential }
-        Note over Server: origin 検証: https://<RPID><br/>公開鍵で署名を検証・カウンター確認
-        Server-->>Safari: { verified: true }
+        Note over Safari,Server: ④ サーバー側検証 → push approval 開始
+        Safari->>Server: POST /authentication/complete { credential, sessionId }
+        Note over Server: sessionId でチャレンジ取得・消費<br/>origin 検証: https://<RPID><br/>公開鍵で署名を検証・カウンター確認<br/>approvalId / code / sessionToken を生成・push 通知送信
+        Server-->>Safari: { approvalId, code }
     end
 
-    Safari-->>User: 認証完了表示
+    Note over Safari: code を大きく表示し approval-status をポーリング<br/>→ AC-5 フローでアプリ承認後にログイン完了
 ```
 
 ---
@@ -627,11 +728,9 @@ FIDO:// URI のハンドリングは OS がシステムレベルで排他的に�
 
 | スキャン動線 | 認証完了後のアプリ遷移 | 備考 |
 |------------|---------------------|------|
-| アプリ内 QR スキャナー | **自動遷移する** | ポーリング中のため検知可能 |
-| ネイティブカメラ（Android） | **遷移しない** | GMS がフローを完結させる |
-| ネイティブカメラ（iOS） | **遷移しない** | iOS システムがフローを完結させる |
-
-ネイティブカメラからの動線で認証完了後にアプリへ遷移させるには、**プッシュ通知（FCM / APNs）**が必要です（本 PoC では未実装）。
+| アプリ内 QR スキャナー（動線 B） | **自動遷移する** | ポーリング中のため検知可能 |
+| 標準カメラ + push approval（動線 A、Android） | **通知 or 手動起動で承認画面表示** | Expo Push Notifications 実装済み |
+| 標準カメラ + push approval（動線 A、iOS） | **通知 or 手動起動で承認画面表示** | EAS Build が必要（Expo Go では APNs 利用不可） |
 
 ### ポーリングの仕組み
 
@@ -647,13 +746,24 @@ Android Credential Manager・iOS のパスキーシートはどちらもシス�
 
 ### BLE の役割と挙動
 
-CTAP2 Hybrid（caBLE）では BLE は**近接確認（Proximity Verification）**に使用されます。QR コードをスキャンした端末が物理的に近くにいることを暗号的に保証し、QRLjacking を防ぐことが目的です。ただし認証データの転送は BLE ではなく **Tunnel Server 経由の HTTPS** で行われます。
+CTAP 2.2 Hybrid Transport では BLE は**近接確認（Proximity Verification）**に使用されます。QR コードをスキャンした端末が物理的に近くにいる可能性を高め、QRLjacking を抑止することが目的です。ただし BLE は RSSI（電波強度）ベースの物理的ヒューリスティックであり、暗号的な保証ではありません（Bluetooth 増幅器による信号中継で理論上は欺ける）。認証データの転送は BLE ではなく **Tunnel Server 経由の HTTPS** で行われます。
 
 ```
 Chrome ─── HTTPS ──→ [Google / Apple] Tunnel Server ←── HTTPS ─── スマートフォン
                      （caBLE relay）
-           BLE（近接確認のみ・任意）
+           BLE（近接確認）
 ```
+
+#### 仕様上の位置づけ
+
+CTAP 2.2 仕様では Hybrid Transport を 2 つのモードに区別しています。
+
+| モード | 説明 | BLE の必須性（仕様） |
+|-------|------|------------------|
+| **QR-initiated Transactions** | 毎回 QR コードをスキャンする一回限りのフロー | **必須** |
+| **State-assisted Transactions** | 既にリンク済みのデバイスを再利用するフロー（Chrome の "Saved phones"） | 不要（リンク確立済みのため）|
+
+本 PoC は QR-initiated モードを使用するため、仕様上 BLE は必須となります。FIDO Dev コミュニティでも「BLE advertisement provides proof of proximity. QR codes offer no proof of proximity」とされており、BLE は QR-initiated フローの近接確認における中核要素です。
 
 #### 本 PoC での検証結果（Android）
 
@@ -663,6 +773,35 @@ Android の Bluetooth をオフにした状態で QR コードをスキャンす
 |-----------|------|---------|
 | ON | Cloud Tunnel + BLE 近接確認 | あり |
 | OFF（拒否） | Cloud Tunnel のみ | **なし** |
+
+この挙動は CTAP 2.2 仕様の意図（QR-initiated は BLE 必須）と乖離しています。原因として以下の 2 つの仮説があります。
+
+**仮説 A: Google Play Services のトンネルフォールバック**
+
+FIDO:// URI は Chromium コードではなく **Google Play Services（Credential Manager）** が処理します（クローズドソースのため実装詳細は非公開）。BLE が拒否された場合にトンネル接続のみで継続する実装になっている可能性があります。なお Chromium の Chrome-as-security-key 実装（`CableAuthenticatorUI.java`）では BLE 拒否時に `ERROR_NO_BLUETOOTH_PERMISSION` でエラー終了するため、PoC が使用するコードパスとは別物です。
+
+**仮説 B: State-assisted モードへの自動切替**
+
+過去のテストで PC Chrome にリンク情報が保存されていた場合、BLE・QR コード不要の FCM push 経由フロー（State-assisted）へ自動切替された可能性があります。これを排除して再テストするには、Chrome の連携済みデバイスをすべて削除した上で、一度もリンクしたことのないブラウザプロファイルから実施してください。
+
+#### C2 再現テスト手順（手動）
+
+より厳密な検証が必要な場合の手順です。
+
+```
+1. Android の Bluetooth を OFF にする
+2. PC Chrome の設定 → プライバシーとセキュリティ → パスキーとパスフレーズ
+   → 連携済みスマートフォンをすべて削除
+3. 新しい Incognito ウィンドウ（= 未リンクのプロファイル）で ngrok URL を開く
+4. パスキーでサインイン → QR コードが表示される
+5. Android の標準カメラで QR スキャン → BLE 有効化プロンプトが出る
+6. 「拒否」を選択して認証を続行
+7. push 通知が届くかを確認 → 届けば Cloud Tunnel フォールバックを実証
+8. adb logcat で `tmp/capture-cable-log.sh` を実行してログを取得
+```
+
+**期待結果**: BLE 拒否後でも push 通知が届き認証が完了する（Cloud Tunnel フォールバック）。
+**代替結果**: BLE 拒否後に認証が中断する（仕様通りの動作）。
 
 #### BLE を必須化できるか
 
@@ -683,13 +822,13 @@ FIDO2 仕様では BLE は「トランスポート」の一つとして定義さ
 |------|------------|----------------|
 | 秘密鍵の保管場所（TEE / Secure Enclave） | あり | 所持要素として認定 |
 | 生体認証・PIN によるユーザー検証 | あり | 生体要素として認定 |
-| デバイスバインディング | あり | - |
+| デバイスバインディング | **条件付き** | device-bound passkeys のみ AAL3 対象。synced passkeys（iCloud / Google バックアップ有効）は鍵がハードウェア外に出るため **AAL2 止まり** |
 | BLE 近接確認 | **なし** | **認証要素として未定義** |
 
 | プラットフォーム | BLE の扱い |
 |----------------|-----------|
-| Google（Android） | 任意。Cloud Tunnel のみでも認証成立（本 PoC で実証） |
-| Apple（iOS / macOS） | CTAP2 Hybrid では任意。Continuity では BLE + Wi-Fi が必須 |
+| Google（Android） | 仕様上は必須だが、実装上は BLE 拒否時にトンネルのみへフォールバック（本 PoC で実証） |
+| Apple（iOS / macOS） | CTAP 2.2 Hybrid では仕様通り BLE 必須。Continuity では BLE + Wi-Fi が必須 |
 | Microsoft（Windows Hello） | Phone Sign-in で補助的に使用 |
 
 ### QRLjacking
@@ -708,11 +847,24 @@ FIDO2 仕様では BLE は「トランスポート」の一つとして定義さ
 | 保護 | 有効か | 理由 |
 |------|--------|------|
 | QR の短期失効 | 部分的 | 有効期限内なら攻撃可能 |
-| origin 検証 | 部分的 | 正規 RP で開始した攻撃者セッションは突破できない |
-| BLE 近接確認 | **無効**（Android） | Google 実装では任意・拒否しても認証成立（本 PoC で実証） |
+| origin 検証 | 部分的 | 攻撃者が正規 RP の `/authentication/begin` を直接呼んで QR を生成した場合は機能しない |
+| BLE 近接確認 | **回避可能**（Android） | 仕様上は必須だが Google 実装では BLE 拒否時にトンネルのみへフォールバック（本 PoC で実証）|
 | BLE + Wi-Fi 近接確認 | **有効**（iOS Continuity） | 両方必須のため遠隔スキャン不可 |
 
 QRLjacking の実行難易度は高く、ユーザー名の把握・フィッシングページの構築・QR スキャンへの誘導・有効期限内完了がすべて必要です。
+
+#### push approval フローによる QRLjacking 軽減
+
+本 PoC の push approval + Number Matching フローは QRLjacking を大幅に軽減します（C3 として自動テスト実装済み）。
+
+| ステップ | 攻撃者が得るもの | 被害者が見るもの | 防御効果 |
+|---------|---------------|----------------|---------|
+| WebAuthn 認証完了 | approvalId（ブラウザに表示）| 攻撃者の IP・UA・時刻が承認画面に表示 | D1: 不審なリクエスト元を視認可能 |
+| push 通知送信 | なし（通知は被害者デバイスへ） | 通知バナー | push は credential 所有者のデバイスにのみ届く |
+| Number Matching | ブラウザに表示された code を知っている | 3択のボタン | 被害者はブラウザを見ていないため 1/3 の確率でしか正解できない |
+| 生体認証 | なし | 承認前に生体認証が要求される | B1: デバイス所有者のみ承認可能 |
+
+**実質的な防御**: 攻撃者が Number Matching を欺くには、被害者に「ブラウザの数字と一致するボタンを押すよう」ソーシャルエンジニアリングしつつ、被害者がそのブラウザを攻撃者のものとは知らないことが必要です。通常の QRLjacking（被害者が偽サイトで QR スキャン）では成立しません。
 
 ### Apple vs Google の設計比較
 
@@ -720,20 +872,100 @@ QRLjacking の実行難易度は高く、ユーザー名の把握・フィッシ
 |------|-------------------|----------------------|
 | クロスデバイスの仕組み | Continuity（独自） | CTAP2 Hybrid（QR） |
 | QR コード | 使わない（Apple デバイス間） | 使う |
-| BLE | **必須**（Wi-Fi との併用） | 任意 |
+| BLE | **必須**（Wi-Fi との併用） | 仕様上は必須だが、実装上は拒否時にトンネルのみへフォールバック |
 | QRLjacking 耐性 | **高い** | 低い |
 | 他プラットフォームとの相互運用 | 限定的 | 高い |
 
 クローズドなエコシステムで高いセキュリティを求めるなら Apple、幅広いデバイス対応を求めるなら Google のアプローチが適しています。
 
+### PoC 実装済みのセキュリティ対策
+
+| 項目 | 内容 |
+|------|------|
+| チャレンジ TTL | `/authentication/begin` 発行から 5 分で自動無効化（A1） |
+| sessionId ベースのチャレンジ管理 | チャレンジをユーザー名でなく sessionId に紐付け（A2） |
+| ユーザー列挙対策 | ユーザー存在に関わらず同形式レスポンスを返す（A3） |
+| usernameless 認証 | ユーザー名なしで認証可能、クレデンシャル ID から逆引き（A4） |
+| counter 巻き戻し検出 | 単調増加確認＋ログ出力（A6） |
+| sessionToken 検証 | 承認操作に server-issued sessionToken（32 byte random）を必須化（B3） |
+| Number Matching | 2 桁 10-99 の 3 択コードで、スキャン端末が正規のスクリーンを見ていることを確認（B6） |
+| 生体認証 | 承認ボタンタップ前に `expo-local-authentication` で生体認証を要求（B1） |
+| リクエスト元コンテキスト表示 | 承認画面に IP・UA・時刻を表示（D1） |
+| 5 分タイムアウト＋カウントダウン | タイムアウト 300 秒、残り 60 秒以下で赤表示（D2/D3） |
+| フォアグラウンド通知バナー | フォアグラウンド時は通知バナーのみ表示、タップで承認画面（D5） |
+| 拒否時確認ダイアログ | 誤タップ防止の確認 Alert（D7） |
+| 「これは私ではない」拒否 | セキュリティアラートを表示し、パスワード変更を促す（D9） |
+
+### PoC 実装上の残存制限
+
+本 PoC は検証目的のため、本番環境では対処が必要な以下の制限があります。
+
+| 項目 | 内容 | 本番での対策 |
+|------|------|------------|
+| CORS ワイルドカード | `app.use(cors())` で全オリジンを許可している | 許可オリジンを ngrok URL / localhost に限定する |
+| レート制限なし | `/authentication/begin` に制限がなく、大量呼び出しによる DoS が可能 | `express-rate-limit` 等で制限する |
+| プッシュトークン登録が未認証 | `POST /push-token` は認証不要のため、任意のユーザー名に対して任意のトークンを登録可能 | トークン登録をセッション認証済みユーザーに限定する |
+| インメモリストア | 再起動でデータ消失、並行リクエストでの競合あり | Redis 等の永続ストアへ移行 |
+
+---
+
+## API リファレンス
+
+サーバーが提供するエンドポイント一覧です。
+
+### パスキー登録・認証
+
+| メソッド | パス | 説明 |
+|---------|------|------|
+| `POST` | `/registration/begin` | 登録チャレンジ生成。`{ username }` → `{ ...options, sessionId }` |
+| `POST` | `/registration/complete` | 登録応答検証・credential 保存。`{ username, credential, sessionId }` |
+| `POST` | `/authentication/begin` | 認証チャレンジ生成（usernameless 対応）。`{ username? }` → `{ ...options, sessionId }` |
+| `POST` | `/authentication/complete` | 認証応答検証 → 承認待ち作成 → push 通知送信。`{ credential, sessionId }` → `{ approvalId, code }` |
+| `GET` | `/authentication/status` | ユーザー単位の最終認証時刻ベースのポーリング（動線 B 用）。`?username=&since=` |
+
+### push approval（AC-5）
+
+| メソッド | パス | 説明 |
+|---------|------|------|
+| `GET` | `/authentication/approval-info` | 承認リクエストの詳細取得（app 側）。`?approvalId=&sessionToken=` → `{ choices, ipAddress, userAgent, createdAt }` |
+| `GET` | `/authentication/approval-status` | 承認状態を確認（Web 側ポーリング用）。`?approvalId=` → `{ status, username }` |
+| `POST` | `/authentication/approve` | アプリで承認（Number Matching 検証）。`{ approvalId, sessionToken, selectedCode }` |
+| `POST` | `/authentication/reject` | アプリで拒否。`{ approvalId, sessionToken }` |
+| `GET` | `/authentication/pending-approval` | push トークンで pending な承認を取得（手動起動時の補完用）。`?token=` → `{ pendingApproval: { approvalId, username, sessionToken } }` |
+| `POST` | `/push-token` | アプリの Expo Push Token をユーザーに紐付け。`{ username, token }` |
+
+### well-known
+
+| メソッド | パス | 説明 |
+|---------|------|------|
+| `GET` | `/.well-known/assetlinks.json` | Android Digital Asset Links |
+| `GET` | `/.well-known/apple-app-site-association` | iOS Associated Domains |
+
+### その他
+
+| メソッド | パス | 説明 |
+|---------|------|------|
+| `GET` | `/` | クロスデバイス認証テスト用の HTML（パスキー認証 → push approval フロー対応） |
+| `GET` | `/health` | ヘルスチェック |
+
+### 承認状態の遷移
+
+```
+pending ──┬── approve ──→ approved
+          ├── reject  ──→ rejected
+          └── 5分経過 ──→ expired
+```
+
 ---
 
 ## 注意事項
 
-- サーバーはインメモリストアを使用しているため、**再起動するとユーザーデータが消えます**。再起動後は AC-1 からやり直してください。
+- サーバーはインメモリストアを使用しているため、**再起動するとユーザーデータと承認状態が消えます**。再起動後は AC-1 からやり直してください。
 - RPID は `.env` の `RPID`（ngrok static domain）で一元管理します。変更した場合は iOS の再ビルドが必要です。
 - Android・iOS ともに USB 接続は**初回ビルド時のみ**必要です。以降は Wi-Fi 接続のみで動作します。
 - `npx expo run:android` で再ビルドすると APK が再署名され、APK ハッシュが変わる場合があります。`app/android/app/debug.keystore` を固定して使い続けてください。
 - AC-3 テストは PC の **Chrome** 推奨です（Safari は CTAP2 Hybrid の対応状況が異なります）。
 - AC-4 テストは **Mac Safari** 使用（Chrome では Continuity は動作しません）。
 - アプリ内 QR スキャナーでクロスデバイス認証を行う場合は、スキャン前にユーザー名を入力してください（ポーリングにユーザー名が必要です）。
+- push approval の承認タイムアウトは **5 分** です。タイムアウト後は Web 側で再度パスキー認証から始めてください。
+- 標準カメラ経由の CTAP2 Hybrid 認証では、生体認証完了後もスマホの OS ダイアログが閉じない環境固有の現象が発生する場合があります（webauthn.io でも再現）。push 通知は届くため、フロー全体は機能します。

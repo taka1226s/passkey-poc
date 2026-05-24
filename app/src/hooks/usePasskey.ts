@@ -14,24 +14,21 @@ export type Status = {
 
 type UsePasskeyResult = {
   register: (username: string) => Promise<void>;
-  authenticate: (username: string) => Promise<void>;
+  authenticate: (username?: string) => Promise<void>;
   loading: boolean;
   status: Status;
 };
 
 const IDLE: Status = { type: 'idle', message: '' };
 
-// コアロジック（テスト可能な純粋非同期関数）
 export async function runRegistration(
   baseUrl: string,
   username: string,
 ): Promise<Status> {
   const rawOptions = await registrationBegin(baseUrl, username);
-  // hints / extensions は一部の Credential Manager バージョンで解析エラーになるため除外
-  const { hints: _hints, extensions: _ext, ...options } = rawOptions as Record<string, unknown>;
-  console.log('[Passkey.create options]', JSON.stringify(options, null, 2));
+  const { hints: _hints, extensions: _ext, sessionId, ...options } = rawOptions as Record<string, unknown> & { sessionId: string };
   const credential = await Passkey.create(options as never);
-  const verified = await registrationComplete(baseUrl, username, credential as never);
+  const verified = await registrationComplete(baseUrl, username, credential as never, sessionId);
   return verified
     ? { type: 'success', message: '登録が完了しました' }
     : { type: 'error', message: '登録の検証に失敗しました' };
@@ -39,13 +36,14 @@ export async function runRegistration(
 
 export async function runAuthentication(
   baseUrl: string,
-  username: string,
+  username?: string,
 ): Promise<Status> {
-  const options = await authenticationBegin(baseUrl, username);
+  const rawOptions = await authenticationBegin(baseUrl, username);
+  const { sessionId, ...options } = rawOptions as Record<string, unknown> & { sessionId: string };
   const credential = await Passkey.get(options as never);
-  const verified = await authenticationComplete(baseUrl, username, credential as never);
-  return verified
-    ? { type: 'success', message: '認証が完了しました' }
+  const result = await authenticationComplete(baseUrl, credential as never, sessionId);
+  return result.approvalId
+    ? { type: 'success', message: '認証完了。スマートフォンアプリで承認してください' }
     : { type: 'error', message: '認証に失敗しました' };
 }
 
@@ -59,11 +57,6 @@ export function usePasskey(baseUrl: string): UsePasskeyResult {
     try {
       setStatus(await runRegistration(baseUrl, username));
     } catch (err) {
-      console.error('[register error raw]', err);
-      console.error('[register error json]', JSON.stringify(err, Object.getOwnPropertyNames(err)));
-      if (err !== null && typeof err === 'object') {
-        console.error('[register error props]', Object.getOwnPropertyNames(err));
-      }
       const message = err instanceof Error ? `登録エラー: ${err.message}` : `登録エラー: ${String(err)}`;
       setStatus({ type: 'error', message });
     } finally {
@@ -71,13 +64,12 @@ export function usePasskey(baseUrl: string): UsePasskeyResult {
     }
   };
 
-  const authenticate = async (username: string): Promise<void> => {
+  const authenticate = async (username?: string): Promise<void> => {
     setLoading(true);
     setStatus(IDLE);
     try {
       setStatus(await runAuthentication(baseUrl, username));
     } catch (err) {
-      console.error('[authenticate error]', err);
       const message = err instanceof Error ? `認証エラー: ${err.message}` : `認証エラー: ${String(err)}`;
       setStatus({ type: 'error', message });
     } finally {

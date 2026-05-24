@@ -6,6 +6,15 @@ const IOS_BUNDLE_ID = process.env.IOS_BUNDLE_ID ?? 'com.yourteam.passkey-poc';
 
 module.exports = {
   ...staticConfig,
+  extra: {
+    eas: {
+      projectId: 'a9f97fe9-5de9-401d-b1c3-690bda59aff1',
+    },
+  },
+  android: {
+    ...staticConfig.android,
+    permissions: ['android.permission.POST_NOTIFICATIONS'],
+  },
   ios: {
     ...staticConfig.ios,
     bundleIdentifier: IOS_BUNDLE_ID,

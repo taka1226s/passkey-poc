@@ -29,7 +29,7 @@ describe('registrationBegin', () => {
 
     expect(fetch).toHaveBeenCalledWith(`${BASE_URL}/registration/begin`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
       body: JSON.stringify({ username: 'test-user' }),
     });
     expect(result).toEqual(mockOptions);
@@ -50,7 +50,7 @@ describe('authenticationBegin', () => {
 
     expect(fetch).toHaveBeenCalledWith(`${BASE_URL}/authentication/begin`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
       body: JSON.stringify({ username: 'test-user' }),
     });
     expect(result).toEqual(mockOptions);
@@ -65,15 +65,15 @@ describe('authenticationBegin', () => {
 describe('registrationComplete', () => {
   it('POST /registration/complete を呼び出して verified を返す', async () => {
     mockFetch({ verified: true });
-    const result = await registrationComplete(BASE_URL, 'test-user', {} as never);
+    const result = await registrationComplete(BASE_URL, 'test-user', {} as never, 'session-id');
     expect(result).toBe(true);
   });
 });
 
 describe('authenticationComplete', () => {
-  it('POST /authentication/complete を呼び出して verified を返す', async () => {
-    mockFetch({ verified: true });
-    const result = await authenticationComplete(BASE_URL, 'test-user', {} as never);
-    expect(result).toBe(true);
+  it('POST /authentication/complete を呼び出して approvalId を返す', async () => {
+    mockFetch({ approvalId: 'appr-id', code: 42 });
+    const result = await authenticationComplete(BASE_URL, {} as never, 'session-id');
+    expect(result).toEqual({ approvalId: 'appr-id', code: 42 });
   });
 });
