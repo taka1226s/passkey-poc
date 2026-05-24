@@ -17,6 +17,7 @@ jest.mock('react-native-passkey', () => ({
 jest.mock('../api/webauthnClient', () => ({
   registrationBegin: jest.fn(),
   registrationComplete: jest.fn(),
+  registrationAuthorize: jest.fn(),
   authenticationBegin: jest.fn(),
   authenticationComplete: jest.fn(),
 }));
@@ -57,9 +58,27 @@ describe('runRegistration', () => {
 
   it('registrationBegin が失敗したとき例外をスロー', async () => {
     (webauthnClient.registrationBegin as jest.Mock).mockRejectedValue(new Error('サーバーエラー'));
-    // sessionId がモックで返らない場合でも例外を正しく伝播する
 
     await expect(runRegistration(BASE_URL, 'test-user')).rejects.toThrow('サーバーエラー');
+  });
+
+  it('requiresReauth のとき再認証フローを経て登録を完了する', async () => {
+    const reauthError = Object.assign(new Error('再認証が必要です'), { requiresReauth: true });
+    (webauthnClient.registrationBegin as jest.Mock)
+      .mockRejectedValueOnce(reauthError)
+      .mockResolvedValueOnce({ challenge: 'abc', sessionId: 'reg-sid' });
+    (webauthnClient.authenticationBegin as jest.Mock).mockResolvedValue({ challenge: 'xyz', sessionId: 'auth-sid' });
+    (Passkey.get as jest.Mock).mockResolvedValue({ id: 'existing-cred', type: 'public-key' });
+    (webauthnClient.registrationAuthorize as jest.Mock).mockResolvedValue({ registrationToken: 'reg-token' });
+    (Passkey.create as jest.Mock).mockResolvedValue({ id: 'new-cred', type: 'public-key' });
+    (webauthnClient.registrationComplete as jest.Mock).mockResolvedValue({ verified: true, deviceToken: 'dt-xxx' });
+
+    const status = await runRegistration(BASE_URL, 'existing-user');
+
+    expect(status.type).toBe('success');
+    expect(webauthnClient.registrationAuthorize).toHaveBeenCalledWith(BASE_URL, expect.any(Object), 'auth-sid');
+    expect(webauthnClient.registrationBegin).toHaveBeenCalledTimes(2);
+    expect(webauthnClient.registrationBegin).toHaveBeenLastCalledWith(BASE_URL, 'existing-user', 'reg-token');
   });
 
   it('Passkey.create がキャンセルされたとき例外をスロー', async () => {

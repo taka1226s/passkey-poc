@@ -127,7 +127,7 @@ export function ApprovalScreen({ approvalId, username, sessionToken, onDone }: P
                 'Content-Type': 'application/json',
                 'ngrok-skip-browser-warning': 'true',
               },
-              body: JSON.stringify({ approvalId, sessionToken }),
+              body: JSON.stringify({ approvalId, sessionToken, reason: isNotMe ? 'not_me' : 'user_rejected' }),
             });
             if (!res.ok) {
               const { error } = await res.json().catch(() => ({})) as { error?: string };

@@ -95,10 +95,22 @@ app.get('/.well-known/assetlinks.json', (_req, res) => {
 // ---- 登録フロー ----
 
 app.post('/registration/begin', async (req, res) => {
-  const { username } = req.body as { username?: string };
+  const { username, registrationToken } = req.body as { username?: string; registrationToken?: string };
   if (!username) {
     res.status(400).json({ error: 'username は必須です' });
     return;
+  }
+
+  // C-1: 既存ユーザーへの追加登録は既存 credential での再認証（registrationToken）を必須化
+  const existingUser = store.getUser(username);
+  if (existingUser && existingUser.credentials.length > 0) {
+    if (!registrationToken || !store.validateAndConsumeRegistrationToken(registrationToken, username)) {
+      res.status(403).json({
+        error: '既存のパスキーへの追加登録には再認証が必要です',
+        requiresReauth: true,
+      });
+      return;
+    }
   }
 
   const user = store.getOrCreateUser(username);
@@ -175,6 +187,64 @@ app.post('/registration/complete', async (req, res) => {
     res.json({ verified: true, deviceToken });
   } catch (err) {
     res.status(400).json({ error: '登録の検証に失敗しました' });
+  }
+});
+
+// C-1: 既存 credential での再認証 → registrationToken 発行
+app.post('/registration/authorize', async (req, res) => {
+  const { credential, sessionId } = req.body as {
+    credential?: AuthenticationResponseJSON;
+    sessionId?: string;
+  };
+  if (!credential || !sessionId) {
+    res.status(400).json({ error: 'credential と sessionId は必須です' });
+    return;
+  }
+
+  const session = store.getChallengeSession(sessionId);
+  if (!session) {
+    res.status(400).json({ error: 'チャレンジが無効または期限切れです' });
+    return;
+  }
+  store.deleteChallengeSession(sessionId);
+
+  const user = store.getUserByCredentialId(credential.id);
+  if (!user) {
+    res.status(404).json({ error: '認証情報が見つかりません' });
+    return;
+  }
+
+  if (session.username && session.username !== user.username) {
+    res.status(400).json({ error: '認証情報のユーザーが一致しません' });
+    return;
+  }
+
+  const storedCred = user.credentials.find((c) => c.id === credential.id)!;
+
+  try {
+    const verification = await verifyAuthenticationResponse({
+      response: credential,
+      expectedChallenge: session.challenge,
+      expectedOrigin: allowedOrigins(),
+      expectedRPID: RPID,
+      credential: {
+        id: storedCred.id,
+        publicKey: storedCred.publicKey,
+        counter: storedCred.counter,
+        transports: storedCred.transports,
+      },
+    });
+
+    if (!verification.verified) {
+      res.status(400).json({ error: '検証に失敗しました' });
+      return;
+    }
+
+    store.updateCounter(user.username, storedCred.id, verification.authenticationInfo.newCounter);
+    const registrationToken = store.createRegistrationToken(user.username);
+    res.json({ registrationToken });
+  } catch {
+    res.status(400).json({ error: '認証に失敗しました' });
   }
 });
 
@@ -359,6 +429,12 @@ app.post('/authentication/claim', (req, res) => {
     res.status(404).json({ error: '承認リクエストが見つかりません' });
     return;
   }
+  // H-1: sessionToken は1回限り取得可能
+  const claimed = store.markSessionTokenClaimed(approvalId);
+  if (!claimed) {
+    res.status(409).json({ error: 'sessionToken は既に取得済みです' });
+    return;
+  }
   res.json({ sessionToken: approval.sessionToken });
 });
 
@@ -408,9 +484,10 @@ app.post('/authentication/approve', (req, res) => {
 });
 
 app.post('/authentication/reject', (req, res) => {
-  const { approvalId, sessionToken } = req.body as {
+  const { approvalId, sessionToken, reason } = req.body as {
     approvalId?: string;
     sessionToken?: string;
+    reason?: 'user_rejected' | 'not_me';
   };
   if (!approvalId || !sessionToken) {
     res.status(400).json({ error: 'approvalId と sessionToken は必須です' });
@@ -425,7 +502,17 @@ app.post('/authentication/reject', (req, res) => {
     res.status(409).json({ error: `既に ${approval.status} 状態です` });
     return;
   }
-  store.updateApprovalStatus(approvalId, 'rejected');
+  const rejectionReason = reason === 'not_me' ? 'not_me' : 'user_rejected';
+  // H-2: 不正アクセスの疑いをサーバー側に記録
+  if (rejectionReason === 'not_me') {
+    console.warn('[security] 不正アクセスの疑いによる拒否:', {
+      approvalId,
+      username: approval.username,
+      ipAddress: approval.ipAddress,
+      userAgent: approval.userAgent,
+    });
+  }
+  store.rejectApproval(approvalId, rejectionReason);
   res.json({ ok: true });
 });
 

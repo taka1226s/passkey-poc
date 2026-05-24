@@ -27,7 +27,7 @@ export async function registerForPushNotifications(): Promise<string | null> {
   try {
     const projectId = Constants.expoConfig?.extra?.eas?.projectId;
     const tokenData = await Notifications.getExpoPushTokenAsync({ projectId });
-    console.log('[notifications] Expo Push Token 取得成功:', tokenData.data);
+    if (__DEV__) console.log('[notifications] Expo Push Token 取得成功:', tokenData.data.slice(0, 20) + '...');
     return tokenData.data;
   } catch (err) {
     console.error('[notifications] Expo Push Token 取得失敗:', err);

@@ -3,6 +3,7 @@ import { Passkey } from 'react-native-passkey';
 import {
   registrationBegin,
   registrationComplete,
+  registrationAuthorize,
   authenticationBegin,
   authenticationComplete,
 } from '../api/webauthnClient';
@@ -26,8 +27,30 @@ export async function runRegistration(
   baseUrl: string,
   username: string,
 ): Promise<Status> {
-  const rawOptions = await registrationBegin(baseUrl, username);
-  const { hints: _hints, extensions: _ext, sessionId, ...options } = rawOptions as Record<string, unknown> & { sessionId: string };
+  let sessionId: string;
+  let options: Record<string, unknown>;
+
+  try {
+    const raw = await registrationBegin(baseUrl, username);
+    const { hints: _h, extensions: _e, sessionId: sid, ...opts } = raw as Record<string, unknown> & { sessionId: string };
+    sessionId = sid;
+    options = opts;
+  } catch (err: unknown) {
+    // C-1: 既存ユーザーへの追加登録 → 既存 credential で再認証して registrationToken を取得
+    if (err instanceof Error && (err as Error & { requiresReauth?: boolean }).requiresReauth) {
+      const authRaw = await authenticationBegin(baseUrl, username);
+      const { sessionId: authSid, ...authOpts } = authRaw as Record<string, unknown> & { sessionId: string };
+      const authCredential = await Passkey.get(authOpts as never);
+      const { registrationToken } = await registrationAuthorize(baseUrl, authCredential as never, authSid);
+      const raw = await registrationBegin(baseUrl, username, registrationToken);
+      const { hints: _h, extensions: _e, sessionId: sid, ...opts } = raw as Record<string, unknown> & { sessionId: string };
+      sessionId = sid;
+      options = opts;
+    } else {
+      throw err;
+    }
+  }
+
   const credential = await Passkey.create(options as never);
   const result = await registrationComplete(baseUrl, username, credential as never, sessionId);
   if (!result.verified) {

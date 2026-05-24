@@ -21,11 +21,34 @@ async function post<T>(url: string, body: unknown): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export function registrationBegin(
+export async function registrationBegin(
   baseUrl: string,
   username: string,
+  registrationToken?: string,
 ): Promise<RegistrationOptionsJSON> {
-  return post(`${baseUrl}/registration/begin`, { username });
+  const res = await fetch(`${baseUrl}/registration/begin`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'ngrok-skip-browser-warning': 'true',
+    },
+    body: JSON.stringify({ username, ...(registrationToken ? { registrationToken } : {}) }),
+  });
+  if (!res.ok) {
+    const body = await res.json() as { error?: string; requiresReauth?: boolean };
+    const err = new Error(body.error ?? `HTTP ${res.status}`);
+    if (body.requiresReauth) (err as Error & { requiresReauth: boolean }).requiresReauth = true;
+    throw err;
+  }
+  return res.json() as Promise<RegistrationOptionsJSON>;
+}
+
+export function registrationAuthorize(
+  baseUrl: string,
+  credential: AuthenticationResponseJSON,
+  sessionId: string,
+): Promise<{ registrationToken: string }> {
+  return post(`${baseUrl}/registration/authorize`, { credential, sessionId });
 }
 
 export function registrationComplete(

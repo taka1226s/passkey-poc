@@ -484,3 +484,151 @@ describe('POST /push-token', () => {
     expect(res.status).toBe(403);
   });
 });
+
+// ---- C-1: 既存ユーザーへの追加登録ブロック ----
+
+describe('C-1: 既存ユーザーへの追加登録ブロック', () => {
+  function addCredential(username: string, credId: string) {
+    store.getOrCreateUser(username);
+    store.addCredential(username, {
+      id: credId,
+      publicKey: Buffer.from('dummy') as unknown as Uint8Array<ArrayBuffer>,
+      counter: 0,
+      deviceType: 'singleDevice',
+      backedUp: false,
+      transports: ['internal'],
+    });
+  }
+
+  it('クレデンシャル登録済みのユーザーへの /registration/begin は 403 と requiresReauth を返す', async () => {
+    addCredential('c1-block-user', 'c1-block-cred');
+    const res = await request(app)
+      .post('/registration/begin')
+      .send({ username: 'c1-block-user' });
+    expect(res.status).toBe(403);
+    expect(res.body.requiresReauth).toBe(true);
+  });
+
+  it('有効な registrationToken があれば既存ユーザーも /registration/begin は 200 を返す', async () => {
+    addCredential('c1-token-user', 'c1-token-cred');
+    const registrationToken = store.createRegistrationToken('c1-token-user');
+    const res = await request(app)
+      .post('/registration/begin')
+      .send({ username: 'c1-token-user', registrationToken });
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('challenge');
+  });
+
+  it('無効な registrationToken での /registration/begin は 403 を返す', async () => {
+    addCredential('c1-bad-token-user', 'c1-bad-token-cred');
+    const res = await request(app)
+      .post('/registration/begin')
+      .send({ username: 'c1-bad-token-user', registrationToken: 'invalid-token' });
+    expect(res.status).toBe(403);
+  });
+
+  it('registrationToken は使い捨て（2回目の使用は 403）', async () => {
+    addCredential('c1-oneshot-user', 'c1-oneshot-cred');
+    const registrationToken = store.createRegistrationToken('c1-oneshot-user');
+    await request(app)
+      .post('/registration/begin')
+      .send({ username: 'c1-oneshot-user', registrationToken });
+    const res = await request(app)
+      .post('/registration/begin')
+      .send({ username: 'c1-oneshot-user', registrationToken });
+    expect(res.status).toBe(403);
+  });
+
+  it('クレデンシャルのない新規ユーザーは registrationToken なしで /registration/begin が通る', async () => {
+    const res = await request(app)
+      .post('/registration/begin')
+      .send({ username: 'c1-new-user' });
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('challenge');
+  });
+});
+
+describe('POST /registration/authorize', () => {
+  it('credential と sessionId がない場合 400 を返す', async () => {
+    const res = await request(app)
+      .post('/registration/authorize')
+      .send({});
+    expect(res.status).toBe(400);
+  });
+
+  it('無効な sessionId で 400 を返す', async () => {
+    const res = await request(app)
+      .post('/registration/authorize')
+      .send({ credential: { id: 'x', type: 'public-key' }, sessionId: 'invalid-session' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/チャレンジが無効/);
+  });
+
+  it('存在しない credential.id で 404 を返す', async () => {
+    const sessionId = store.createChallengeSession('auth-challenge');
+    const res = await request(app)
+      .post('/registration/authorize')
+      .send({ credential: { id: 'nonexistent-cred', type: 'public-key' }, sessionId });
+    expect(res.status).toBe(404);
+  });
+});
+
+// ---- H-1: /claim は1回限り ----
+
+describe('H-1: /claim は sessionToken を1回限り返す', () => {
+  it('2回目の /claim は 409 を返す', async () => {
+    const token = 'ExponentPushToken[h1-one-time-claim]';
+    const approval = store.createApproval('h1-user', { pushToken: token });
+
+    const res1 = await request(app)
+      .post('/authentication/claim')
+      .send({ approvalId: approval.id, pushToken: token });
+    expect(res1.status).toBe(200);
+    expect(res1.body.sessionToken).toBe(approval.sessionToken);
+
+    const res2 = await request(app)
+      .post('/authentication/claim')
+      .send({ approvalId: approval.id, pushToken: token });
+    expect(res2.status).toBe(409);
+  });
+});
+
+// ---- H-2: reject reason をサーバーに記録 ----
+
+describe('H-2: /reject は reason を記録する', () => {
+  it('reason: not_me で拒否すると rejectionReason が保存される', async () => {
+    const approval = store.createApproval('h2-user', {
+      pushToken: 'ExponentPushToken[h2-reject]',
+    });
+    const res = await request(app)
+      .post('/authentication/reject')
+      .send({ approvalId: approval.id, sessionToken: approval.sessionToken, reason: 'not_me' });
+    expect(res.status).toBe(200);
+    expect(store.getApproval(approval.id)!.status).toBe('rejected');
+    expect(store.getApproval(approval.id)!.rejectionReason).toBe('not_me');
+  });
+
+  it('reason なしの拒否は user_rejected として記録される', async () => {
+    const approval = store.createApproval('h2-user2', {
+      pushToken: 'ExponentPushToken[h2-reject2]',
+    });
+    const res = await request(app)
+      .post('/authentication/reject')
+      .send({ approvalId: approval.id, sessionToken: approval.sessionToken });
+    expect(res.status).toBe(200);
+    expect(store.getApproval(approval.id)!.rejectionReason).toBe('user_rejected');
+  });
+});
+
+// ---- M-3: 最新の pending approval を返す ----
+
+describe('M-3: getPendingApprovalByPushToken は最新の pending を返す', () => {
+  it('複数 pending がある場合 createdAt が最大のものを返す', () => {
+    const token = 'ExponentPushToken[m3-multi]';
+    const older = store.createApproval('m3-user', { pushToken: token });
+    const newer = store.createApproval('m3-user', { pushToken: token });
+    expect(newer.createdAt).toBeGreaterThanOrEqual(older.createdAt);
+    const found = store.getPendingApprovalByPushToken(token);
+    expect(found?.id).toBe(newer.id);
+  });
+});

@@ -12,7 +12,9 @@ export type PendingApproval = {
   code: number;
   choices: number[];
   sessionToken: string;
+  sessionTokenClaimed: boolean;
   failedAttempts: number;
+  rejectionReason?: 'user_rejected' | 'not_me';
   ipAddress?: string;
   userAgent?: string;
 };
@@ -42,11 +44,14 @@ export type CredentialRecord = {
 
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 const DEVICE_TOKEN_TTL_MS = 15 * 60 * 1000;
+const REGISTRATION_TOKEN_TTL_MS = 5 * 60 * 1000;
+const APPROVAL_CLEANUP_DELAY_MS = 10 * 60 * 1000;
 
 const users = new Map<string, UserRecord>();
 const approvals = new Map<string, PendingApproval>();
 const challengeSessions = new Map<string, ChallengeSession>();
 const deviceTokens = new Map<string, { username: string; expiresAt: number }>();
+const registrationTokens = new Map<string, { username: string; expiresAt: number }>();
 
 // 剰余バイアスなしの一様乱数 [0, max)
 function secureRandInt(max: number): number {
@@ -189,6 +194,7 @@ export const store = {
       code,
       choices: generateChoices(code),
       sessionToken: generateSessionToken(),
+      sessionTokenClaimed: false,
       failedAttempts: 0,
       ipAddress: opts.ipAddress,
       userAgent: opts.userAgent,
@@ -198,12 +204,15 @@ export const store = {
   },
 
   getPendingApprovalByPushToken(token: string): PendingApproval | undefined {
+    let latest: PendingApproval | undefined;
     for (const approval of approvals.values()) {
       if (approval.pushToken === token && approval.status === 'pending') {
-        return approval;
+        if (!latest || approval.createdAt >= latest.createdAt) {
+          latest = approval;
+        }
       }
     }
-    return undefined;
+    return latest;
   },
 
   getApproval(approvalId: string): PendingApproval | undefined {
@@ -212,7 +221,42 @@ export const store = {
 
   updateApprovalStatus(approvalId: string, status: ApprovalStatus): void {
     const approval = approvals.get(approvalId);
-    if (approval) approval.status = status;
+    if (approval) {
+      approval.status = status;
+      if (status !== 'pending') {
+        setTimeout(() => approvals.delete(approvalId), APPROVAL_CLEANUP_DELAY_MS).unref();
+      }
+    }
+  },
+
+  rejectApproval(approvalId: string, reason: 'user_rejected' | 'not_me'): void {
+    const approval = approvals.get(approvalId);
+    if (approval) {
+      approval.status = 'rejected';
+      approval.rejectionReason = reason;
+      setTimeout(() => approvals.delete(approvalId), APPROVAL_CLEANUP_DELAY_MS).unref();
+    }
+  },
+
+  markSessionTokenClaimed(approvalId: string): boolean {
+    const approval = approvals.get(approvalId);
+    if (!approval || approval.sessionTokenClaimed) return false;
+    approval.sessionTokenClaimed = true;
+    return true;
+  },
+
+  createRegistrationToken(username: string): string {
+    const token = randomBytes(32).toString('base64url');
+    registrationTokens.set(token, { username, expiresAt: Date.now() + REGISTRATION_TOKEN_TTL_MS });
+    return token;
+  },
+
+  validateAndConsumeRegistrationToken(token: string, username: string): boolean {
+    const entry = registrationTokens.get(token);
+    if (!entry) return false;
+    registrationTokens.delete(token);
+    if (Date.now() > entry.expiresAt) return false;
+    return entry.username === username;
   },
 
   incrementFailedAttempts(approvalId: string): number {
