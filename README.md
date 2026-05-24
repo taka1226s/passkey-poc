@@ -880,19 +880,36 @@ QRLjacking の実行難易度は高く、ユーザー名の把握・フィッシ
 
 ### PoC 実装済みのセキュリティ対策
 
+#### WebAuthn チャレンジ管理
+
 | 項目 | 内容 |
 |------|------|
 | チャレンジ TTL | `/authentication/begin` 発行から 5 分で自動無効化（A1） |
-| sessionId ベースのチャレンジ管理 | チャレンジをユーザー名でなく sessionId に紐付け（A2） |
+| sessionId ベースのチャレンジ管理 | チャレンジをユーザー名でなく sessionId に紐付け。username バインディングあり（A2） |
 | ユーザー列挙対策 | ユーザー存在に関わらず同形式レスポンスを返す（A3） |
 | usernameless 認証 | ユーザー名なしで認証可能、クレデンシャル ID から逆引き（A4） |
 | counter 巻き戻し検出 | 単調増加確認＋ログ出力（A6） |
+
+#### push approval フロー
+
+| 項目 | 内容 |
+|------|------|
+| deviceToken による push 登録認証 | `/push-token` は passkey 登録・承認後に発行される deviceToken（15 分・使い捨て）を必須化。任意の push token 乗っ取りを防止（H1） |
+| sessionToken を push 通知から分離 | push data には `approvalId` のみ送信。アプリは `/authentication/claim { approvalId, pushToken }` で sessionToken を取得（H2） |
+| push 通知本文の情報最小化 | 通知本文から username を削除。ロック画面での情報漏洩を防止（H3） |
 | sessionToken 検証 | 承認操作に server-issued sessionToken（32 byte random）を必須化（B3） |
-| Number Matching | 2 桁 10-99 の 3 択コードで、スキャン端末が正規のスクリーンを見ていることを確認（B6） |
+| Number Matching（試行1回制限） | 2 桁 10-99 の 3 択、一様乱数生成（rejection sampling + Fisher-Yates）。誤答1回で即 rejected（C1/B6） |
 | 生体認証 | 承認ボタンタップ前に `expo-local-authentication` で生体認証を要求（B1） |
+| 動線 B 直接完了 | push token 未登録ユーザーは approval を作成せず直接完了。動線 B（app QR スキャナー）との衝突を解消（H6） |
+
+#### UX・コンテキスト検証
+
+| 項目 | 内容 |
+|------|------|
 | リクエスト元コンテキスト表示 | 承認画面に IP・UA・時刻を表示（D1） |
 | 5 分タイムアウト＋カウントダウン | タイムアウト 300 秒、残り 60 秒以下で赤表示（D2/D3） |
 | フォアグラウンド通知バナー | フォアグラウンド時は通知バナーのみ表示、タップで承認画面（D5） |
+| 手動起動時バナー | 起動時ポーリングでオレンジバナー表示、タップで承認画面（D8） |
 | 拒否時確認ダイアログ | 誤タップ防止の確認 Alert（D7） |
 | 「これは私ではない」拒否 | セキュリティアラートを表示し、パスワード変更を促す（D9） |
 
@@ -904,8 +921,9 @@ QRLjacking の実行難易度は高く、ユーザー名の把握・フィッシ
 |------|------|------------|
 | CORS ワイルドカード | `app.use(cors())` で全オリジンを許可している | 許可オリジンを ngrok URL / localhost に限定する |
 | レート制限なし | `/authentication/begin` に制限がなく、大量呼び出しによる DoS が可能 | `express-rate-limit` 等で制限する |
-| プッシュトークン登録が未認証 | `POST /push-token` は認証不要のため、任意のユーザー名に対して任意のトークンを登録可能 | トークン登録をセッション認証済みユーザーに限定する |
+| `/authentication/status` が未認証 | username を知っていれば誰でも最終認証時刻を取得できる。動線 B のポーリングに使用しているため削除不可 | ポーリングに短命なトークンを要求するか、WebSocket に置き換える |
 | インメモリストア | 再起動でデータ消失、並行リクエストでの競合あり | Redis 等の永続ストアへ移行 |
+| push token 更新の制限 | アプリ再インストール後は passkey 再登録または承認を行うまで push token が更新されない | 起動時の passkey サイレント認証で deviceToken を取得する仕組みを追加 |
 
 ---
 
@@ -918,21 +936,22 @@ QRLjacking の実行難易度は高く、ユーザー名の把握・フィッシ
 | メソッド | パス | 説明 |
 |---------|------|------|
 | `POST` | `/registration/begin` | 登録チャレンジ生成。`{ username }` → `{ ...options, sessionId }` |
-| `POST` | `/registration/complete` | 登録応答検証・credential 保存。`{ username, credential, sessionId }` |
+| `POST` | `/registration/complete` | 登録応答検証・credential 保存。`{ username, credential, sessionId }` → `{ verified: true, deviceToken }` |
 | `POST` | `/authentication/begin` | 認証チャレンジ生成（usernameless 対応）。`{ username? }` → `{ ...options, sessionId }` |
-| `POST` | `/authentication/complete` | 認証応答検証 → 承認待ち作成 → push 通知送信。`{ credential, sessionId }` → `{ approvalId, code }` |
+| `POST` | `/authentication/complete` | 認証応答検証。push token あり → `{ approvalId, code }`、なし（動線 B）→ `{ verified: true }` |
 | `GET` | `/authentication/status` | ユーザー単位の最終認証時刻ベースのポーリング（動線 B 用）。`?username=&since=` |
 
 ### push approval（AC-5）
 
 | メソッド | パス | 説明 |
 |---------|------|------|
+| `POST` | `/authentication/claim` | push token 所持を証明して sessionToken を取得。`{ approvalId, pushToken }` → `{ sessionToken }` |
 | `GET` | `/authentication/approval-info` | 承認リクエストの詳細取得（app 側）。`?approvalId=&sessionToken=` → `{ choices, ipAddress, userAgent, createdAt }` |
 | `GET` | `/authentication/approval-status` | 承認状態を確認（Web 側ポーリング用）。`?approvalId=` → `{ status, username }` |
-| `POST` | `/authentication/approve` | アプリで承認（Number Matching 検証）。`{ approvalId, sessionToken, selectedCode }` |
+| `POST` | `/authentication/approve` | アプリで承認（Number Matching 検証・誤答1回で即 rejected）。`{ approvalId, sessionToken, selectedCode }` → `{ ok: true, deviceToken }` |
 | `POST` | `/authentication/reject` | アプリで拒否。`{ approvalId, sessionToken }` |
-| `GET` | `/authentication/pending-approval` | push トークンで pending な承認を取得（手動起動時の補完用）。`?token=` → `{ pendingApproval: { approvalId, username, sessionToken } }` |
-| `POST` | `/push-token` | アプリの Expo Push Token をユーザーに紐付け。`{ username, token }` |
+| `GET` | `/authentication/pending-approval` | push トークンで pending な承認を取得（手動起動時の補完用）。`?token=` → `{ pendingApproval: { approvalId, username } }` |
+| `POST` | `/push-token` | アプリの Expo Push Token をユーザーに紐付け（deviceToken 必須）。`{ username, token, deviceToken }` |
 
 ### well-known
 
