@@ -173,7 +173,7 @@ Android・iOS どちらをスキャン端末にしても同じ手順です。本
 
 このフローは AC-5（push approval）と AC-3 の組み合わせです。
 
-1. アプリを起動してユーザー名を入力し、キーボードを閉じる（プッシュトークンがサーバに登録される）
+1. 事前に AC-1 でパスキー登録を完了させる（登録時に push token がサーバに登録される）
 2. アプリを閉じてよい
 3. PC の Chrome で ngrok URL を開き、同じユーザー名で「パスキーでサインイン」をクリック
 4. QR コードが表示される
@@ -413,8 +413,16 @@ sequenceDiagram
     rect rgb(255, 245, 220)
         Note over App,Server: ③ サーバー側検証・保存
         App->>Server: POST /registration/complete { username, credential, sessionId }
-        Note over Server: sessionId でチャレンジを取得・消費（TTL 検証）<br/>origin・rpID 検証<br/>公開鍵・カウンターを保存
-        Server-->>App: { verified: true }
+        Note over Server: sessionId でチャレンジを取得・消費（TTL 検証）<br/>origin・rpID 検証<br/>公開鍵・カウンターを保存<br/>deviceToken（15分・使い捨て）を発行
+        Server-->>App: { verified: true, deviceToken }
+    end
+
+    rect rgb(200, 240, 220)
+        Note over App,Server: ④ push token 登録（H1）
+        App->>App: registerForPushNotifications()
+        App->>Server: POST /push-token { username, token, deviceToken }
+        Note over Server: deviceToken 検証・消費<br/>push token を保存
+        Server-->>App: { ok: true }
     end
 
     App-->>User: 「登録が完了しました」
@@ -455,13 +463,16 @@ sequenceDiagram
     rect rgb(255, 245, 220)
         Note over App,Server: ③ サーバー側署名検証
         App->>Server: POST /authentication/complete { credential, sessionId }
-        Note over Server: sessionId でチャレンジを取得・消費<br/>クレデンシャル ID からユーザーを逆引き<br/>origin 検証・counter 巻き戻し確認<br/>approvalId・code・sessionToken を生成
-        Server->>Server: push 通知送信（push トークン登録済みの場合）
-        Server-->>App: { approvalId, code }
-    end
-
-    Note over App: push 通知またはアプリ内の承認画面で最終承認（AC-5 フロー）
-    App-->>User: 「認証完了。スマートフォンアプリで承認してください」
+        Note over Server: sessionId でチャレンジを取得・消費<br/>クレデンシャル ID からユーザーを逆引き<br/>origin 検証・counter 巻き戻し確認
+        alt push token 登録済み
+            Note over Server: approvalId・code・sessionToken を生成<br/>push 通知送信（data: approvalId, username のみ）
+            Server-->>App: { approvalId, code }
+            Note over App: push 通知またはアプリ内の承認画面で最終承認（AC-5 フロー）
+            App-->>User: 「認証完了。スマートフォンアプリで承認してください」
+        else push token 未登録（H6: 直接完了）
+            Server-->>App: { verified: true }
+            App-->>User: 「認証が完了しました」
+        end
 ```
 
 ### AC-3：クロスデバイス認証（CTAP2 Hybrid）
@@ -481,8 +492,9 @@ sequenceDiagram
     rect rgb(220, 235, 255)
         Note over Browser,Server: ① チャレンジ取得（hybrid 限定）
         Browser->>Server: POST /authentication/begin { username }
-        Note over Server: チャレンジ生成<br/>transports を ["hybrid"] に限定<br/>→ platform 認証（Touch ID 等）を除外
-        Server-->>Browser: options { challenge,<br/>allowCredentials: [{ transports:["hybrid"] }] }
+        Note over Server: チャレンジ生成
+        Server-->>Browser: options { challenge, allowCredentials, sessionId }
+        Note over Browser: allowCredentials の transports を ["hybrid"] に上書き<br/>→ platform 認証（Touch ID 等）を除外
     end
 
     rect rgb(220, 255, 220)
@@ -561,8 +573,8 @@ sequenceDiagram
     rect rgb(255, 245, 220)
         Note over Browser,Server: ④ PC ブラウザ → サーバー検証
         Browser->>Server: POST /authentication/complete { credential, sessionId }
-        Note over Server: sessionId でチャレンジ取得・消費<br/>署名検証・カウンター確認<br/>lastAuthenticatedAt = Date.now() を記録<br/>approvalId / code / sessionToken を生成（push 通知送信）
-        Server-->>Browser: { approvalId, code }
+        Note over Server: sessionId でチャレンジ取得・消費<br/>署名検証・カウンター確認<br/>lastAuthenticatedAt = Date.now() を記録<br/>push token なし → 直接完了（H6）
+        Server-->>Browser: { verified: true }（push token なし）
     end
 
     rect rgb(235, 220, 255)
@@ -589,7 +601,7 @@ sequenceDiagram
     participant CM as Android Credential Manager
     participant ExpoPN as Expo Push<br/>Notifications API
 
-    Note over App,Server: 事前：アプリでユーザー名入力 → プッシュトークン登録済み<br/>（POST /push-token）
+    Note over App,Server: 事前：AC-1 でパスキー登録済み<br/>（登録時に deviceToken 経由で push token がサーバに登録される）
 
     rect rgb(220, 235, 255)
         Note over Browser,Server: ① パスキー認証チャレンジ取得（usernameless 対応）
@@ -612,8 +624,8 @@ sequenceDiagram
     rect rgb(255, 245, 220)
         Note over Browser,Server: ③ サーバー側検証 → Number Matching コード生成 → 承認待ち
         Browser->>Server: POST /authentication/complete { credential, sessionId }
-        Note over Server: sessionId でチャレンジ取得・消費（TTL 検証）<br/>クレデンシャル ID からユーザーを逆引き（A4）<br/>counter 巻き戻し確認（A6）<br/>code = rand(10-99), choices = 3択シャッフル<br/>sessionToken = random(32 bytes)<br/>approvalId, code, sessionToken を生成<br/>IP・UA を記録 / 5分後に expired
-        Server->>ExpoPN: POST /push/send<br/>{ data: { approvalId, username, sessionToken } }
+        Note over Server: sessionId でチャレンジ取得・消費（TTL 検証）<br/>クレデンシャル ID からユーザーを逆引き（A4）<br/>counter 巻き戻し確認（A6）<br/>code = rand(10-99)（rejection sampling）<br/>choices = 3択シャッフル（Fisher-Yates）<br/>sessionToken = random(32 bytes)（内部保持・push には含めない）<br/>approvalId, code を生成・IP・UA を記録 / 5分後に expired
+        Server->>ExpoPN: POST /push/send<br/>{ data: { approvalId, username } }（H2: sessionToken を含めない）
         Server-->>Browser: { approvalId, code }
         Note over Browser: code を大きく表示<br/>pollApproval(approvalId) 開始（1.5 秒間隔）
     end
@@ -623,6 +635,8 @@ sequenceDiagram
         ExpoPN->>CM: FCM 経由で配信
         CM->>App: 通知バナーを表示（フォアグラウンド時）
         User->>App: バナーをタップ（またはアプリ起動）
+        App->>Server: POST /authentication/claim<br/>{ approvalId, pushToken }（H2: push token 所持を証明）
+        Server-->>App: { sessionToken }
         App->>Server: GET /authentication/approval-info<br/>?approvalId=&sessionToken=
         Server-->>App: { choices: [n1,n2,n3], ipAddress, userAgent, createdAt }
         App-->>User: 3択ボタン・IP/UA/時刻・カウントダウン表示
@@ -635,7 +649,8 @@ sequenceDiagram
         App->>App: expo-local-authentication で生体認証
         App->>Server: POST /authentication/approve<br/>{ approvalId, sessionToken, selectedCode }
         Note over Server: sessionToken 検証<br/>selectedCode === code 検証<br/>approval.status = "approved"
-        Server-->>App: { ok: true }
+        Server-->>App: { ok: true, deviceToken }
+        App->>Server: POST /push-token { username, token, deviceToken }（push token 更新・H1）
         Note over Browser: ポーリングで status="approved" 検知
         Browser-->>User: 「ログイン成功！ ○○ としてサインインしました」
     end
@@ -655,7 +670,9 @@ sequenceDiagram
     App->>App: registerForPushNotifications() で<br/>自分の Expo Push Token を取得
     App->>Server: GET /authentication/pending-approval?token=...
     alt pending な承認あり
-        Server-->>App: { pendingApproval: { approvalId, username, sessionToken } }
+        Server-->>App: { pendingApproval: { approvalId, username } }（H2: sessionToken なし）
+        App->>Server: POST /authentication/claim<br/>{ approvalId, pushToken }
+        Server-->>App: { sessionToken }
         App-->>User: ホーム画面上部にオレンジバナー表示（D8）<br/>バナーをタップ → 承認画面（Number Matching 含む）
     else なし
         Server-->>App: { pendingApproval: null }
