@@ -547,6 +547,27 @@ app.get('/authentication/status', (req, res) => {
   res.json({ authenticated });
 });
 
+// ---- パスキー管理（一覧・削除） ----
+// 注意: PoC 検証用のため認可は username のみ。本番転用時はパスキー認証成功時に
+// 発行する短命の管理トークン方式への置き換えが必須（仕様書の前提・制約参照）
+
+app.get('/credentials', (req, res) => {
+  const { username } = req.query as { username?: string };
+  if (!username) {
+    res.status(400).json({ error: 'username は必須です' });
+    return;
+  }
+  // 未登録ユーザーも 200 空配列（ユーザー存在有無を漏らさない — M-7 方針）
+  const user = store.getUser(username);
+  const credentials = (user?.credentials ?? []).map((c) => ({
+    id: c.id,
+    deviceType: c.deviceType,
+    backedUp: c.backedUp,
+    transports: c.transports,
+  }));
+  res.json({ credentials });
+});
+
 // ---- Web UI ----
 
 app.get('/', (_req, res) => {

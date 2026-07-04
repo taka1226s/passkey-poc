@@ -659,6 +659,54 @@ describe('H-2: /reject は reason を記録する', () => {
   });
 });
 
+// ---- パスキー一覧・削除 API ----
+
+function makeCredential(id: string) {
+  return {
+    id,
+    publicKey: Buffer.from('dummy') as unknown as Uint8Array<ArrayBuffer>,
+    counter: 0,
+    deviceType: 'singleDevice' as const,
+    backedUp: false,
+    transports: ['internal' as const],
+  };
+}
+
+describe('GET /credentials', () => {
+  it('AC-1: 登録済みユーザーの一覧を公開情報のみで返す', async () => {
+    const username = 'list-test-alice';
+    store.getOrCreateUser(username);
+    store.addCredential(username, makeCredential('list-cred-1'));
+    store.addCredential(username, makeCredential('list-cred-2'));
+
+    const res = await request(app).get('/credentials').query({ username });
+
+    expect(res.status).toBe(200);
+    expect(res.body.credentials).toHaveLength(2);
+    expect(res.body.credentials[0]).toEqual({
+      id: 'list-cred-1',
+      deviceType: 'singleDevice',
+      backedUp: false,
+      transports: ['internal'],
+    });
+    for (const cred of res.body.credentials) {
+      expect(cred).not.toHaveProperty('publicKey');
+      expect(cred).not.toHaveProperty('counter');
+    }
+  });
+
+  it('AC-2: 未登録ユーザーは 200 で空配列を返す', async () => {
+    const res = await request(app).get('/credentials').query({ username: 'list-test-nobody' });
+    expect(res.status).toBe(200);
+    expect(res.body.credentials).toEqual([]);
+  });
+
+  it('AC-6: username なしは 400 を返す', async () => {
+    const res = await request(app).get('/credentials');
+    expect(res.status).toBe(400);
+  });
+});
+
 // ---- M-3: 最新の pending approval を返す ----
 
 describe('M-3: getPendingApprovalByPushToken は最新の pending を返す', () => {
