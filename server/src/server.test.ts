@@ -707,6 +707,67 @@ describe('GET /credentials', () => {
   });
 });
 
+describe('DELETE /credentials/:credentialId', () => {
+  it('AC-3: 2件中1件を削除すると 200 { ok: true } で一覧が1件になる', async () => {
+    const username = 'del-test-alice';
+    store.getOrCreateUser(username);
+    store.addCredential(username, makeCredential('del-cred-1'));
+    store.addCredential(username, makeCredential('del-cred-2'));
+
+    const res = await request(app).delete('/credentials/del-cred-1').query({ username });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true });
+    const creds = store.getUser(username)!.credentials;
+    expect(creds).toHaveLength(1);
+    expect(creds[0]!.id).toBe('del-cred-2');
+  });
+
+  it('AC-4: 最後の1件は 409 を返し削除されない', async () => {
+    const username = 'del-test-last';
+    store.getOrCreateUser(username);
+    store.addCredential(username, makeCredential('del-last-cred'));
+
+    const res = await request(app).delete('/credentials/del-last-cred').query({ username });
+
+    expect(res.status).toBe(409);
+    expect(store.getUser(username)!.credentials).toHaveLength(1);
+  });
+
+  it('AC-5: 存在しない credentialId は 404 を返す', async () => {
+    const username = 'del-test-notfound';
+    store.getOrCreateUser(username);
+    store.addCredential(username, makeCredential('del-nf-cred-1'));
+    store.addCredential(username, makeCredential('del-nf-cred-2'));
+
+    const res = await request(app).delete('/credentials/no-such-id').query({ username });
+    expect(res.status).toBe(404);
+  });
+
+  it('AC-5: 他ユーザーの credential は 404 を返し削除されない', async () => {
+    const owner = 'del-test-owner';
+    store.getOrCreateUser(owner);
+    store.addCredential(owner, makeCredential('del-owner-cred-1'));
+    store.addCredential(owner, makeCredential('del-owner-cred-2'));
+    const attacker = 'del-test-attacker';
+    store.getOrCreateUser(attacker);
+    store.addCredential(attacker, makeCredential('del-attacker-cred-1'));
+    store.addCredential(attacker, makeCredential('del-attacker-cred-2'));
+
+    const res = await request(app)
+      .delete('/credentials/del-owner-cred-1')
+      .query({ username: attacker });
+
+    expect(res.status).toBe(404);
+    expect(store.getUser(owner)!.credentials).toHaveLength(2);
+  });
+
+  it('AC-6: username なしは 400 を返す', async () => {
+    const res = await request(app).delete('/credentials/some-id');
+    expect(res.status).toBe(400);
+  });
+});
+
 // ---- M-3: 最新の pending approval を返す ----
 
 describe('M-3: getPendingApprovalByPushToken は最新の pending を返す', () => {

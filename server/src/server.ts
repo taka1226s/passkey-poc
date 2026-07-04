@@ -568,6 +568,26 @@ app.get('/credentials', (req, res) => {
   res.json({ credentials });
 });
 
+app.delete('/credentials/:credentialId', (req, res) => {
+  const { credentialId } = req.params;
+  const { username } = req.query as { username?: string };
+  if (!username) {
+    res.status(400).json({ error: 'username は必須です' });
+    return;
+  }
+  const result = store.removeCredential(username, credentialId);
+  if (result === 'not_found') {
+    // credential 不存在とユーザー不存在・他ユーザー所有を区別しない（列挙対策）
+    res.status(404).json({ error: '認証情報が見つかりません' });
+    return;
+  }
+  if (result === 'last_credential') {
+    res.status(409).json({ error: '最後のパスキーは削除できません' });
+    return;
+  }
+  res.json({ ok: true });
+});
+
 // ---- Web UI ----
 
 app.get('/', (_req, res) => {
