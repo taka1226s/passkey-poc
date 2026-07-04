@@ -140,6 +140,20 @@ export const store = {
     if (user) user.credentials.push(credential);
   },
 
+  // 対象ユーザーの credentials のみ検索するため、他ユーザーの credential は削除できない
+  removeCredential(
+    username: string,
+    credentialId: string,
+  ): 'removed' | 'not_found' | 'last_credential' {
+    const user = users.get(username);
+    if (!user) return 'not_found';
+    const index = user.credentials.findIndex((c) => c.id === credentialId);
+    if (index === -1) return 'not_found';
+    if (user.credentials.length <= 1) return 'last_credential';
+    user.credentials.splice(index, 1);
+    return 'removed';
+  },
+
   updateCounter(username: string, credentialId: string, counter: number): void {
     const user = users.get(username);
     if (!user) return;

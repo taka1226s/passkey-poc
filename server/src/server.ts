@@ -547,6 +547,47 @@ app.get('/authentication/status', (req, res) => {
   res.json({ authenticated });
 });
 
+// ---- パスキー管理（一覧・削除） ----
+// 注意: PoC 検証用のため認可は username のみ。本番転用時はパスキー認証成功時に
+// 発行する短命の管理トークン方式への置き換えが必須（仕様書の前提・制約参照）
+
+app.get('/credentials', (req, res) => {
+  const { username } = req.query as { username?: string };
+  if (!username) {
+    res.status(400).json({ error: 'username は必須です' });
+    return;
+  }
+  // 未登録ユーザーも 200 空配列（ユーザー存在有無を漏らさない — M-7 方針）
+  const user = store.getUser(username);
+  const credentials = (user?.credentials ?? []).map((c) => ({
+    id: c.id,
+    deviceType: c.deviceType,
+    backedUp: c.backedUp,
+    transports: c.transports,
+  }));
+  res.json({ credentials });
+});
+
+app.delete('/credentials/:credentialId', (req, res) => {
+  const { credentialId } = req.params;
+  const { username } = req.query as { username?: string };
+  if (!username) {
+    res.status(400).json({ error: 'username は必須です' });
+    return;
+  }
+  const result = store.removeCredential(username, credentialId);
+  if (result === 'not_found') {
+    // credential 不存在とユーザー不存在・他ユーザー所有を区別しない（列挙対策）
+    res.status(404).json({ error: '認証情報が見つかりません' });
+    return;
+  }
+  if (result === 'last_credential') {
+    res.status(409).json({ error: '最後のパスキーは削除できません' });
+    return;
+  }
+  res.json({ ok: true });
+});
+
 // ---- Web UI ----
 
 app.get('/', (_req, res) => {
