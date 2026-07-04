@@ -46,6 +46,7 @@ app/eas.json
 
 # Server build output
 server/dist/
+server/coverage/
 
 # Temporary files
 tmp/
