@@ -1,0 +1,31 @@
+default_platform(:android)
+
+platform :android do
+  desc "Debug APKをビルド(CIのビルド検証用)"
+  lane :build_debug do
+    gradle(
+      task: "assembleDebug",
+      project_dir: "."
+    )
+  end
+
+  desc "Release APK(署名はdebug鍵を暫定利用)をビルドしてDeployGateへ配信"
+  lane :publish_deploygate do |options|
+    # 呼び出し元(.github/workflows/_deploy-android-deploygate.yml)がVERSION_CODE空文字列/未設定の
+    # 両方でversion_code:引数自体を渡さないため、ここでの空文字列truthy問題は発生しない
+    gradle_properties = {}
+    gradle_properties["VERSION_CODE"] = options[:version_code] if options[:version_code]
+
+    gradle(
+      task: "assembleRelease",
+      project_dir: ".",
+      properties: gradle_properties
+    )
+    deploygate(
+      api_token: ENV["DEPLOYGATE_API_TOKEN"],
+      user: ENV["DEPLOYGATE_USER"],
+      apk: "app/build/outputs/apk/release/app-release.apk",
+      message: options[:message] || "CI配信"
+    )
+  end
+end

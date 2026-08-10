@@ -1,4 +1,4 @@
-種別: 正式
+種別: PoC
 
 # passkey-poc — 開発ガイド
 
@@ -13,10 +13,9 @@ Android / iOS 実機でパスキー（FIDO2/WebAuthn）認証を検証するプ�
 
 ## プロセス成果物
 
-正式プロジェクトのため、仕様駆動プロセス（CLAUDE.md グローバル設定の Lv1〜3）を厳密適用する：
+PoC プロジェクトのため、フルプロセス（仕様書・設計書・承認記録・実装ゲート等）は適用しない。目的・受け入れ基準の骨子を会話で合意すれば実装に進んでよい。
 
-- 仕様書 `docs/requirements/` / 設計書 `docs/design/` / テスト仕様書 `docs/test-specs/`
-- 承認記録 `docs/approvals/`（実装ゲート有効）/ DoD・レビュー記録 `docs/qa/`
+過去に正式プロジェクトとして運用していた期間の成果物（`docs/requirements/` / `docs/design/` / `docs/approvals/` / `docs/test-specs/` / `docs/qa/`）は記録として残す。
 
 ## 注意
 
