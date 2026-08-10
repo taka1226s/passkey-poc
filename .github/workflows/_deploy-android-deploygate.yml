@@ -39,6 +39,11 @@ jobs:
             ~/.gradle/wrapper
           key: gradle-${{ hashFiles('app/android/gradle/wrapper/gradle-wrapper.properties') }}
 
+      - name: Write google-services.json
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: echo "$GOOGLE_SERVICES_JSON" > app/android/app/google-services.json
+
       - name: Build and deploy to DeployGate
         working-directory: app/android
         env:
