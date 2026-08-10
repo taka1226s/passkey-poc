@@ -1,0 +1,20 @@
+name: Deploy Android to DeployGate
+
+on:
+  workflow_dispatch:
+    inputs:
+      message:
+        description: 'DeployGateのリリースノート'
+        required: false
+        default: 'CI配信'
+      version_code:
+        description: 'AndroidのversionCode(未指定時はGradleの既定値を使用。自動配信の再配信時は失敗した実行の run number を指定する)'
+        required: false
+
+jobs:
+  deploy:
+    uses: ./.github/workflows/_deploy-android-deploygate.yml
+    with:
+      message: ${{ github.event.inputs.message }}
+      version_code: ${{ github.event.inputs.version_code }}
+    secrets: inherit

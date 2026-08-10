@@ -1,0 +1,42 @@
+name: 'Setup mobile toolchain'
+description: 'Node.js(+npm ci)、必要に応じてJava/Rubyをまとめてセットアップする'
+
+inputs:
+  working-directory:
+    description: 'npm ci / bundle installを実行するディレクトリ'
+    required: false
+    default: 'app'
+  java:
+    description: 'Java(Android用)をセットアップするか'
+    required: false
+    default: 'false'
+  ruby:
+    description: 'Ruby/Bundler(fastlane用)をセットアップするか'
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+        cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+
+    - name: Install npm dependencies
+      shell: bash
+      run: cd "${{ inputs.working-directory }}" && npm ci
+
+    - if: inputs.java == 'true'
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+
+    - if: inputs.ruby == 'true'
+      uses: ruby/setup-ruby@v1
+      with:
+        ruby-version: '3.3'
+        bundler-cache: true
+        working-directory: ${{ inputs.working-directory }}

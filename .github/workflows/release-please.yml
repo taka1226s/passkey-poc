@@ -1,0 +1,45 @@
+name: Release Please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-please-main
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+
+      - name: Normalize outputs (モノレポ出力キー名ゆれの吸収)
+        id: normalized
+        run: |
+          echo "release_created=${{ steps.release.outputs['app--release_created'] || steps.release.outputs.release_created || 'false' }}" >> "$GITHUB_OUTPUT"
+          echo "tag_name=${{ steps.release.outputs['app--tag_name'] || steps.release.outputs.tag_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Log raw outputs for verification
+        env:
+          RELEASE_OUTPUTS_JSON: ${{ toJson(steps.release.outputs) }}
+        run: echo "$RELEASE_OUTPUTS_JSON"
+    outputs:
+      release_created: ${{ steps.normalized.outputs.release_created }}
+      tag_name: ${{ steps.normalized.outputs.tag_name }}
+
+  deploy-android:
+    name: Build release and deploy to DeployGate
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    uses: ./.github/workflows/_deploy-android-deploygate.yml
+    with:
+      version_code: ${{ github.run_number }}
+      message: Release ${{ needs.release-please.outputs.tag_name }}
+    secrets: inherit

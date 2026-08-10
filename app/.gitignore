@@ -40,3 +40,7 @@ yarn-error.*
 # Generated native folders
 # /android は PoC のカスタム設定（debug keystore 等）を含むため追跡対象
 /ios
+
+# ローカルRubyバージョンがCIと異なりロックファイルの互換性を保証できないため、
+# bundle installはCI(ruby/setup-ruby の bundler-cache)側で都度解決する
+Gemfile.lock
