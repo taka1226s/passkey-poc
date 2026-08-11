@@ -44,6 +44,20 @@ jobs:
           GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
         run: echo "$GOOGLE_SERVICES_JSON" > app/android/app/google-services.json
 
+      - name: Write app/.env (EXPO_PUBLIC_API_URL)
+        env:
+          EXPO_PUBLIC_API_URL: ${{ vars.EXPO_PUBLIC_API_URL }}
+        run: |
+          # 未設定のままビルドすると config.ts の既定値 http://localhost:3000 が
+          # JSバンドルに焼き込まれ、実機からは自分自身を指すため必ず疎通できなくなる。
+          # 気づかれないまま配信されるのを防ぐため、未設定時はここで明示的に失敗させる。
+          if [ -z "$EXPO_PUBLIC_API_URL" ]; then
+            echo "::error::vars.EXPO_PUBLIC_API_URL が未設定です。開発サーバーへ疎通できるngrok等の固定URLを" \
+                 "'gh variable set EXPO_PUBLIC_API_URL --repo <repo> --env deploygate' で登録してください。"
+            exit 1
+          fi
+          echo "EXPO_PUBLIC_API_URL=$EXPO_PUBLIC_API_URL" > app/.env
+
       - name: Build and deploy to DeployGate
         working-directory: app/android
         env:
