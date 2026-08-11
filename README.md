@@ -425,8 +425,9 @@ sequenceDiagram
 
     rect rgb(220, 235, 255)
         Note over App,Server: ① チャレンジ取得（Android / iOS 共通）
-        App->>Server: POST /registration/begin { username }<br/>Authorization: Bearer &lt;authToken&gt;（AC-0 でログイン済みであること）
-        Note over Server: 初回登録時: authToken のusernameと本文usernameの一致を検証（401）<br/>2台目以降: 別途 registrationToken による再認証が必要（後述）<br/>ランダムチャレンジ生成・sessionId に紐付けて保存（TTL 5分）
+        App->>Server: POST /registration/begin { username }
+        Note over App,Server: Authorization: Bearer <authToken>（AC-0 でログイン済みであること）
+        Note over Server: 初回登録時はauthTokenのusernameと本文usernameの一致を検証（401）<br/>2台目以降は別途 registrationToken による再認証が必要（後述）<br/>ランダムチャレンジ生成・sessionId に紐付けて保存（TTL 5分）
         Server-->>App: { ...options, sessionId }
     end
 
@@ -511,6 +512,7 @@ sequenceDiagram
             Server-->>App: { verified: true }
             App-->>User: 「認証が完了しました」
         end
+    end
 ```
 
 ### AC-3：クロスデバイス認証（CTAP2 Hybrid）
