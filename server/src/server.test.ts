@@ -2,6 +2,13 @@ import request from 'supertest';
 import { app } from './server';
 import { store } from './store';
 
+// テスト用: username をサインアップ(未登録なら)してログイン済み authToken を得る
+async function loginToken(username: string): Promise<string> {
+  const token = store.createAuthSession(username);
+  store.getOrCreateUser(username);
+  return token;
+}
+
 // ---- ヘルスチェック ----
 
 describe('GET /health', () => {
@@ -12,12 +19,94 @@ describe('GET /health', () => {
   });
 });
 
+// ---- ID/PASS 認証 ----
+
+describe('POST /auth/signup', () => {
+  it('username, password を渡すと authToken を返す', async () => {
+    const res = await request(app)
+      .post('/auth/signup')
+      .send({ username: 'signup-user-1', password: 'password123' });
+    expect(res.status).toBe(200);
+    expect(typeof res.body.authToken).toBe('string');
+    expect(store.getAuthSession(res.body.authToken)).toBe('signup-user-1');
+  });
+
+  it('password が7文字以下だと 400 を返す', async () => {
+    const res = await request(app)
+      .post('/auth/signup')
+      .send({ username: 'signup-user-2', password: 'short12' });
+    expect(res.status).toBe(400);
+  });
+
+  it('username が既に使われていると 409 を返す', async () => {
+    await request(app).post('/auth/signup').send({ username: 'signup-dup', password: 'password123' });
+    const res = await request(app)
+      .post('/auth/signup')
+      .send({ username: 'signup-dup', password: 'password456' });
+    expect(res.status).toBe(409);
+  });
+
+  it('username または password がないと 400 を返す', async () => {
+    const res = await request(app).post('/auth/signup').send({ username: 'signup-user-3' });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('POST /auth/login', () => {
+  it('正しい username, password で authToken を返す', async () => {
+    await request(app).post('/auth/signup').send({ username: 'login-user-1', password: 'password123' });
+    const res = await request(app)
+      .post('/auth/login')
+      .send({ username: 'login-user-1', password: 'password123' });
+    expect(res.status).toBe(200);
+    expect(typeof res.body.authToken).toBe('string');
+  });
+
+  it('間違ったパスワードでは 401 を返す', async () => {
+    await request(app).post('/auth/signup').send({ username: 'login-user-2', password: 'password123' });
+    const res = await request(app)
+      .post('/auth/login')
+      .send({ username: 'login-user-2', password: 'wrong-password' });
+    expect(res.status).toBe(401);
+  });
+
+  it('存在しない username では 401 を返す（列挙対策で存在有無を区別しない）', async () => {
+    const res = await request(app)
+      .post('/auth/login')
+      .send({ username: 'login-user-nobody', password: 'anything123' });
+    expect(res.status).toBe(401);
+    expect(res.body.error).toBe('ユーザー名またはパスワードが違います');
+  });
+});
+
+describe('POST /auth/logout', () => {
+  it('authToken を渡すとセッションが無効化される', async () => {
+    const signup = await request(app)
+      .post('/auth/signup')
+      .send({ username: 'logout-user-1', password: 'password123' });
+    const { authToken } = signup.body;
+    expect(store.getAuthSession(authToken)).toBe('logout-user-1');
+
+    const res = await request(app).post('/auth/logout').send({ authToken });
+
+    expect(res.status).toBe(200);
+    expect(store.getAuthSession(authToken)).toBeUndefined();
+  });
+
+  it('authToken なしでも 200 を返す', async () => {
+    const res = await request(app).post('/auth/logout').send({});
+    expect(res.status).toBe(200);
+  });
+});
+
 // ---- 登録フロー ----
 
 describe('POST /registration/begin', () => {
-  it('username を渡すと sessionId 付きの PublicKeyCredentialCreationOptions を返す', async () => {
+  it('ログイン済みで username を渡すと sessionId 付きの PublicKeyCredentialCreationOptions を返す', async () => {
+    const token = await loginToken('test-user');
     const res = await request(app)
       .post('/registration/begin')
+      .set('Authorization', `Bearer ${token}`)
       .send({ username: 'test-user' });
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty('challenge');
@@ -34,6 +123,22 @@ describe('POST /registration/begin', () => {
       .post('/registration/begin')
       .send({ username: '' });
     expect(res.status).toBe(400);
+  });
+
+  it('未ログインで最初のパスキー登録を試みると 401 を返す', async () => {
+    const res = await request(app)
+      .post('/registration/begin')
+      .send({ username: 'no-session-user' });
+    expect(res.status).toBe(401);
+  });
+
+  it('ログイン済みでも別usernameでは 401 を返す(セッションのusernameと不一致)', async () => {
+    const token = await loginToken('session-owner-user');
+    const res = await request(app)
+      .post('/registration/begin')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ username: 'someone-else' });
+    expect(res.status).toBe(401);
   });
 });
 
@@ -578,9 +683,11 @@ describe('C-1: 既存ユーザーへの追加登録ブロック', () => {
     expect(res.status).toBe(403);
   });
 
-  it('クレデンシャルのない新規ユーザーは registrationToken なしで /registration/begin が通る', async () => {
+  it('クレデンシャルのない新規ユーザーはログイン済みなら registrationToken なしで /registration/begin が通る', async () => {
+    const token = await loginToken('c1-new-user');
     const res = await request(app)
       .post('/registration/begin')
+      .set('Authorization', `Bearer ${token}`)
       .send({ username: 'c1-new-user' });
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty('challenge');
@@ -673,13 +780,14 @@ function makeCredential(id: string) {
 }
 
 describe('GET /credentials', () => {
-  it('AC-1: 登録済みユーザーの一覧を公開情報のみで返す', async () => {
+  it('AC-1: 登録済みユーザーの一覧を公開情報のみで返す（ログインセッション必須）', async () => {
     const username = 'list-test-alice';
     store.getOrCreateUser(username);
     store.addCredential(username, makeCredential('list-cred-1'));
     store.addCredential(username, makeCredential('list-cred-2'));
+    const token = await loginToken(username);
 
-    const res = await request(app).get('/credentials').query({ username });
+    const res = await request(app).get('/credentials').set('Authorization', `Bearer ${token}`);
 
     expect(res.status).toBe(200);
     expect(res.body.credentials).toHaveLength(2);
@@ -695,15 +803,32 @@ describe('GET /credentials', () => {
     }
   });
 
-  it('AC-2: 未登録ユーザーは 200 で空配列を返す', async () => {
-    const res = await request(app).get('/credentials').query({ username: 'list-test-nobody' });
+  it('AC-2: 認証情報のないログイン済みユーザーは 200 で空配列を返す', async () => {
+    const token = await loginToken('list-test-nobody');
+    const res = await request(app).get('/credentials').set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(200);
     expect(res.body.credentials).toEqual([]);
   });
 
-  it('AC-6: username なしは 400 を返す', async () => {
+  it('AC-6: Authorization ヘッダーなしは 401 を返す', async () => {
     const res = await request(app).get('/credentials');
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(401);
+  });
+
+  it('追加検証: 無効な authToken は 401 を返す', async () => {
+    const res = await request(app).get('/credentials').set('Authorization', 'Bearer invalid-token');
+    expect(res.status).toBe(401);
+  });
+
+  it('追加検証: 他ユーザーの authToken では自分の一覧しか見えない', async () => {
+    const owner = 'list-test-owner';
+    store.getOrCreateUser(owner);
+    store.addCredential(owner, makeCredential('list-owner-cred'));
+    const attackerToken = await loginToken('list-test-attacker');
+
+    const res = await request(app).get('/credentials').set('Authorization', `Bearer ${attackerToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.credentials).toEqual([]);
   });
 });
 
@@ -713,8 +838,11 @@ describe('DELETE /credentials/:credentialId', () => {
     store.getOrCreateUser(username);
     store.addCredential(username, makeCredential('del-cred-1'));
     store.addCredential(username, makeCredential('del-cred-2'));
+    const token = await loginToken(username);
 
-    const res = await request(app).delete('/credentials/del-cred-1').query({ username });
+    const res = await request(app)
+      .delete('/credentials/del-cred-1')
+      .set('Authorization', `Bearer ${token}`);
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ ok: true });
@@ -727,8 +855,11 @@ describe('DELETE /credentials/:credentialId', () => {
     const username = 'del-test-last';
     store.getOrCreateUser(username);
     store.addCredential(username, makeCredential('del-last-cred'));
+    const token = await loginToken(username);
 
-    const res = await request(app).delete('/credentials/del-last-cred').query({ username });
+    const res = await request(app)
+      .delete('/credentials/del-last-cred')
+      .set('Authorization', `Bearer ${token}`);
 
     expect(res.status).toBe(409);
     expect(store.getUser(username)!.credentials).toHaveLength(1);
@@ -739,8 +870,11 @@ describe('DELETE /credentials/:credentialId', () => {
     store.getOrCreateUser(username);
     store.addCredential(username, makeCredential('del-nf-cred-1'));
     store.addCredential(username, makeCredential('del-nf-cred-2'));
+    const token = await loginToken(username);
 
-    const res = await request(app).delete('/credentials/no-such-id').query({ username });
+    const res = await request(app)
+      .delete('/credentials/no-such-id')
+      .set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(404);
   });
 
@@ -749,22 +883,53 @@ describe('DELETE /credentials/:credentialId', () => {
     store.getOrCreateUser(owner);
     store.addCredential(owner, makeCredential('del-owner-cred-1'));
     store.addCredential(owner, makeCredential('del-owner-cred-2'));
-    const attacker = 'del-test-attacker';
-    store.getOrCreateUser(attacker);
-    store.addCredential(attacker, makeCredential('del-attacker-cred-1'));
-    store.addCredential(attacker, makeCredential('del-attacker-cred-2'));
+    const attackerToken = await loginToken('del-test-attacker');
 
     const res = await request(app)
       .delete('/credentials/del-owner-cred-1')
-      .query({ username: attacker });
+      .set('Authorization', `Bearer ${attackerToken}`);
 
     expect(res.status).toBe(404);
     expect(store.getUser(owner)!.credentials).toHaveLength(2);
   });
 
-  it('AC-6: username なしは 400 を返す', async () => {
+  it('AC-6: Authorization ヘッダーなしは 401 を返す', async () => {
     const res = await request(app).delete('/credentials/some-id');
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(401);
+  });
+
+  it('追加検証: 無効な authToken は 401 を返す', async () => {
+    const res = await request(app)
+      .delete('/credentials/some-id')
+      .set('Authorization', 'Bearer invalid-token');
+    expect(res.status).toBe(401);
+  });
+
+  it('追加検証: credentialId が極端に長い文字列でもクラッシュせず 404 を返す', async () => {
+    const username = 'del-test-longid';
+    store.getOrCreateUser(username);
+    store.addCredential(username, makeCredential('del-longid-cred'));
+    const token = await loginToken(username);
+
+    const longId = 'a'.repeat(5000);
+    const res = await request(app)
+      .delete(`/credentials/${longId}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(404);
+    expect(store.getUser(username)!.credentials).toHaveLength(1);
+  });
+
+  it('追加検証: credentialId にパストラバーサル的な文字列を渡してもクラッシュせず 404 を返す', async () => {
+    const username = 'del-test-traversal';
+    store.getOrCreateUser(username);
+    store.addCredential(username, makeCredential('del-traversal-cred'));
+    const token = await loginToken(username);
+
+    const res = await request(app)
+      .delete(`/credentials/${encodeURIComponent('../../etc/passwd')}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(404);
+    expect(store.getUser(username)!.credentials).toHaveLength(1);
   });
 });
 

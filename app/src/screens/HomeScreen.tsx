@@ -11,8 +11,11 @@ import { usePasskey } from '../hooks/usePasskey';
 import { QRScannerScreen } from './QRScannerScreen';
 import { AuthWaitingScreen } from './AuthWaitingScreen';
 import { ApprovalScreen } from './ApprovalScreen';
+import { AuthScreen } from './AuthScreen';
+import { CredentialsScreen } from './CredentialsScreen';
 import { BASE_URL } from '../config';
 import { registerForPushNotifications } from '../utils/notifications';
+import { authLogout } from '../api/webauthnClient';
 
 type ApprovalRequest = { approvalId: string; username: string; sessionToken: string };
 
@@ -34,11 +37,26 @@ export function HomeScreen({
   const [username, setUsername] = useState('');
   const [showScanner, setShowScanner] = useState(false);
   const [showWaiting, setShowWaiting] = useState(false);
+  const [showAuth, setShowAuth] = useState(false);
+  const [showCredentials, setShowCredentials] = useState(false);
+  // ID/PASS ログイン、またはパスワードレスのパスキーログイン(no-push分岐)で得た
+  // ログインセッション。永続化なし(アプリ再起動で消える。既存のtoken管理と同じ制約)
+  const [authToken, setAuthToken] = useState<string | null>(null);
+  const [loggedInUsername, setLoggedInUsername] = useState<string | null>(null);
   const { register, authenticate, loading, status } = usePasskey(BASE_URL);
 
   useEffect(() => {
     registerForPushNotifications().catch(() => {});
   }, []);
+
+  // パスワードレスのパスキーログイン成功時、no-push分岐ならauthTokenが返るのでログイン状態にする
+  useEffect(() => {
+    if (status.type === 'success' && status.authToken) {
+      setAuthToken(status.authToken);
+      setLoggedInUsername(username.trim() || loggedInUsername || '(usernameless)');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status]);
 
   // H1: push token のサーバー登録は passkey 登録後に deviceToken と一緒に行う
   // blur 時は通知権限のリクエストのみ
@@ -46,6 +64,14 @@ export function HomeScreen({
     if (!username.trim()) return;
     registerForPushNotifications().catch(() => {});
   }, [username]);
+
+  const handleLogout = useCallback(async () => {
+    if (authToken) {
+      await authLogout(BASE_URL, authToken).catch(() => {});
+    }
+    setAuthToken(null);
+    setLoggedInUsername(null);
+  }, [authToken]);
 
   if (approvalRequest) {
     return (
@@ -78,6 +104,24 @@ export function HomeScreen({
     );
   }
 
+  if (showAuth) {
+    return (
+      <AuthScreen
+        onClose={() => setShowAuth(false)}
+        onLoggedIn={(loggedInUser, token) => {
+          setAuthToken(token);
+          setLoggedInUsername(loggedInUser);
+          setUsername(loggedInUser);
+          setShowAuth(false);
+        }}
+      />
+    );
+  }
+
+  if (showCredentials && authToken) {
+    return <CredentialsScreen authToken={authToken} onClose={() => setShowCredentials(false)} />;
+  }
+
   return (
     <View style={styles.container}>
       {/* D8: 手動起動時 pending バナー */}
@@ -99,6 +143,24 @@ export function HomeScreen({
       <Text style={styles.title}>Passkey PoC</Text>
       <Text style={styles.subtitle}>パスキー認証デモ</Text>
 
+      {authToken && loggedInUsername ? (
+        <View style={styles.loginStatusBox}>
+          <Text style={styles.loginStatusText}>{loggedInUsername} としてログイン中</Text>
+          <View style={styles.loginStatusButtons}>
+            <TouchableOpacity onPress={() => setShowCredentials(true)}>
+              <Text style={styles.loginStatusLink}>認証情報を管理</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={handleLogout}>
+              <Text style={styles.loginStatusLink}>ログアウト</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      ) : (
+        <TouchableOpacity style={styles.loginPromptButton} onPress={() => setShowAuth(true)}>
+          <Text style={styles.loginPromptText}>ID/PASSでログイン・新規登録</Text>
+        </TouchableOpacity>
+      )}
+
       <TextInput
         style={styles.input}
         placeholder="ユーザー名"
@@ -107,18 +169,26 @@ export function HomeScreen({
         onBlur={handleUsernameBlur}
         autoCapitalize="none"
         autoCorrect={false}
-        editable={!loading}
+        editable={!loading && !authToken}
       />
 
       <TouchableOpacity
         style={[styles.button, styles.primaryButton, loading && styles.disabled]}
-        onPress={() => register(username)}
-        disabled={loading || !username.trim()}
+        onPress={() => {
+          if (!authToken || !loggedInUsername) {
+            setShowAuth(true);
+            return;
+          }
+          register(loggedInUsername, authToken);
+        }}
+        disabled={loading || (!authToken && !username.trim())}
       >
         {loading ? (
           <ActivityIndicator color="#fff" />
         ) : (
-          <Text style={styles.buttonText}>パスキーを登録</Text>
+          <Text style={styles.buttonText}>
+            {authToken ? 'パスキーを追加登録' : 'パスキーを登録（ログインが必要です）'}
+          </Text>
         )}
       </TouchableOpacity>
 
@@ -222,6 +292,42 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#666',
     marginBottom: 32,
+  },
+  loginStatusBox: {
+    width: '100%',
+    backgroundColor: '#e8f4ff',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 16,
+  },
+  loginStatusText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#007AFF',
+    marginBottom: 6,
+  },
+  loginStatusButtons: {
+    flexDirection: 'row',
+    gap: 16,
+  },
+  loginStatusLink: {
+    fontSize: 13,
+    color: '#007AFF',
+    textDecorationLine: 'underline',
+  },
+  loginPromptButton: {
+    width: '100%',
+    padding: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#007AFF',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  loginPromptText: {
+    color: '#007AFF',
+    fontSize: 14,
+    fontWeight: '600',
   },
   input: {
     width: '100%',

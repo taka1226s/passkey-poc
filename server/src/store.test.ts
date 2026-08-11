@@ -65,3 +65,82 @@ describe('store.removeCredential', () => {
     expect(store.getUser(owner)!.credentials).toHaveLength(2);
   });
 });
+
+describe('store.setPassword / store.verifyPassword', () => {
+  it('設定したパスワードで verifyPassword が true を返す', () => {
+    const username = 'pw-test-u1';
+    store.getOrCreateUser(username);
+    store.setPassword(username, 'correct-horse-battery-staple');
+
+    expect(store.verifyPassword(username, 'correct-horse-battery-staple')).toBe(true);
+  });
+
+  it('異なるパスワードでは verifyPassword が false を返す', () => {
+    const username = 'pw-test-u2';
+    store.getOrCreateUser(username);
+    store.setPassword(username, 'correct-horse-battery-staple');
+
+    expect(store.verifyPassword(username, 'wrong-password')).toBe(false);
+  });
+
+  it('パスワード未設定のユーザーは verifyPassword が false を返す', () => {
+    const username = 'pw-test-u3';
+    store.getOrCreateUser(username);
+
+    expect(store.verifyPassword(username, 'anything')).toBe(false);
+  });
+
+  it('存在しないユーザーは verifyPassword が false を返す', () => {
+    expect(store.verifyPassword('pw-test-nobody', 'anything')).toBe(false);
+  });
+
+  it('同じパスワードでもハッシュ値は都度異なる(salt有効)', () => {
+    const u1 = 'pw-test-salt-1';
+    const u2 = 'pw-test-salt-2';
+    store.getOrCreateUser(u1);
+    store.getOrCreateUser(u2);
+    store.setPassword(u1, 'same-password');
+    store.setPassword(u2, 'same-password');
+
+    expect(store.getUser(u1)!.passwordHash).not.toBe(store.getUser(u2)!.passwordHash);
+    expect(store.verifyPassword(u1, 'same-password')).toBe(true);
+    expect(store.verifyPassword(u2, 'same-password')).toBe(true);
+  });
+});
+
+describe('store.createAuthSession / store.getAuthSession / store.deleteAuthSession', () => {
+  it('発行したトークンで getAuthSession が username を返す', () => {
+    const username = 'auth-session-u1';
+    const token = store.createAuthSession(username);
+
+    expect(store.getAuthSession(token)).toBe(username);
+  });
+
+  it('存在しないトークンは undefined を返す', () => {
+    expect(store.getAuthSession('no-such-token')).toBeUndefined();
+  });
+
+  it('deleteAuthSession 後は getAuthSession が undefined を返す', () => {
+    const username = 'auth-session-u2';
+    const token = store.createAuthSession(username);
+    store.deleteAuthSession(token);
+
+    expect(store.getAuthSession(token)).toBeUndefined();
+  });
+
+  it('期限切れセッションは undefined を返し破棄される', () => {
+    jest.useFakeTimers();
+    try {
+      const username = 'auth-session-u3';
+      const token = store.createAuthSession(username);
+
+      jest.advanceTimersByTime(24 * 60 * 60 * 1000 + 1);
+
+      expect(store.getAuthSession(token)).toBeUndefined();
+      // 破棄済みなので、時間を戻しても復活しない
+      expect(store.getAuthSession(token)).toBeUndefined();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});

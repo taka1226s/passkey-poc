@@ -8,14 +8,18 @@ Android / iOS 実機でパスキー（FIDO2/WebAuthn）認証を検証するた�
 
 | ID | 内容 | Android | iOS |
 |----|------|:-------:|:---:|
-| AC-1 | アプリでパスキーを登録する | 完了 | 未着手 |
+| AC-0 | ID/PASS でサインアップ・ログインする（ベースライン認証） | 完了 | 未着手 |
+| AC-1 | ログイン済みの状態でアプリでパスキーを追加登録する | 完了 | 未着手 |
 | AC-2 | 同一デバイスでパスキー認証する | 完了 | 未着手 |
 | AC-3 | PC ブラウザから QR コード経由で認証する（CTAP2 Hybrid） | 完了※ | 未着手 |
 | AC-4 | Mac Safari から iPhone の Continuity 経由で認証する | N/A | 未着手 |
 | AC-5 | Web パスキー認証 → アプリで最終承認（push approval） | 完了 | 未着手 |
 
+> AC-1 は ID/PASS ログインが前提（初回のパスキー登録はログインセッションが必須になった。詳細は「認証フロー」の AC-0 参照）。
 > AC-4 は Apple デバイス間専用フロー（Continuity）で iOS のみ対象。
 > ※ AC-3：標準カメラ経由は credential 送信は成功するが OS ダイアログが閉じない環境問題あり（webauthn.io でも再現）。アプリ内 QR スキャナー経由は問題なし。
+
+**このPoCは「初期状態は ID/PASS 認証、そこにパスキーを機能追加する」というストーリーで構成されている**（多くの現場でよくあるシナリオ）。ID/PASS でサインアップ・ログイン → ログイン済みの状態からアプリ・Web それぞれでパスキーを追加登録 → 以降は ID/PASS・パスキーのどちらでもログイン可能、という流れ。詳細は「認証フロー」セクション参照。
 
 ---
 
@@ -154,12 +158,22 @@ npm run dev
 
 ## 使い方
 
+### AC-0：ID/PASS でサインアップ・ログイン（Android / iOS 共通、Web 共通）
+
+パスキーはログイン済みの状態でのみ追加登録できる。まずアカウントを作る。
+
+1. アプリを開き、「ID/PASSでログイン・新規登録」をタップ（Web の場合はトップページの「ログイン / 新規登録」フォーム）
+2. ユーザー名・パスワード（8文字以上）を入力して「新規登録」をタップ
+3. 自動的にログイン状態になる（ログインセッションは端末再起動・ページリロードで失効する。永続化はしていない）
+4. 以降は同じユーザー名・パスワードで「ログイン」も可能
+
 ### AC-1：パスキー登録（Android / iOS 共通）
 
-1. アプリを開く
-2. ユーザー名を入力して「パスキーを登録」をタップ
+1. AC-0 でログインした状態でアプリを開く
+2. 「パスキーを追加登録」をタップ
 3. 生体認証（Android: 指紋 / 顔認証、iOS: Face ID / Touch ID）を完了する
-4. 「登録が完了しました」と表示されれば成功
+4. 「パスキーを登録しました」と表示されれば成功
+5. 「認証情報を管理」から登録済みパスキーの一覧・削除ができる
 
 ### AC-2：同一デバイス認証（Android / iOS 共通）
 
@@ -374,6 +388,28 @@ RP サーバーは「どのルートで署名が届いたか」を関知せず�
 
 ## 認証フロー
 
+### AC-0：ID/PASS サインアップ・ログイン
+
+```mermaid
+sequenceDiagram
+    actor User as ユーザー
+    participant Client as アプリ / Web
+    participant Server as Express サーバー
+
+    User->>Client: ユーザー名・パスワード入力 → 「新規登録」
+    Client->>Server: POST /auth/signup { username, password }
+    Note over Server: password.length >= 8 を検証<br/>username 重複チェック（409）<br/>scrypt でパスワードハッシュ化して保存<br/>ログインセッション(authToken)発行（TTL 24h）
+    Server-->>Client: { authToken }
+    Note over Client: authToken はメモリのみで保持<br/>（永続化なし。再起動/リロードで失効）
+
+    User->>Client: （後日）ユーザー名・パスワード入力 → 「ログイン」
+    Client->>Server: POST /auth/login { username, password }
+    Note over Server: verifyPassword（存在しないuser/不一致を区別しない列挙対策）
+    Server-->>Client: { authToken }
+```
+
+`authToken` は `Authorization: Bearer <authToken>` ヘッダーとして、パスキー初回登録（AC-1）・認証情報の一覧取得/削除に使う。Cookie は使わず、App/Web で同じヘッダー方式に統一している。
+
 ### AC-1：パスキー登録
 
 ```mermaid
@@ -389,8 +425,8 @@ sequenceDiagram
 
     rect rgb(220, 235, 255)
         Note over App,Server: ① チャレンジ取得（Android / iOS 共通）
-        App->>Server: POST /registration/begin { username }
-        Note over Server: ユーザー作成 or 取得<br/>ランダムチャレンジ生成・sessionId に紐付けて保存（TTL 5分）
+        App->>Server: POST /registration/begin { username }<br/>Authorization: Bearer &lt;authToken&gt;（AC-0 でログイン済みであること）
+        Note over Server: 初回登録時: authToken のusernameと本文usernameの一致を検証（401）<br/>2台目以降: 別途 registrationToken による再認証が必要（後述）<br/>ランダムチャレンジ生成・sessionId に紐付けて保存（TTL 5分）
         Server-->>App: { ...options, sessionId }
     end
 
@@ -950,14 +986,24 @@ QRLjacking の実行難易度は高く、ユーザー名の把握・フィッシ
 
 サーバーが提供するエンドポイント一覧です。
 
+### ID/PASS 認証（AC-0）
+
+| メソッド | パス | 説明 |
+|---------|------|------|
+| `POST` | `/auth/signup` | ユーザー作成。`{ username, password }`（password 8文字以上） → `{ authToken }`。username 重複は 409 |
+| `POST` | `/auth/login` | ログイン。`{ username, password }` → `{ authToken }`。存在しないuser/パスワード不一致は区別せず 401 |
+| `POST` | `/auth/logout` | ログアウト。`{ authToken }` → `{ ok: true }` |
+
+`authToken` は `Authorization: Bearer <authToken>` ヘッダーとして、`/registration/begin`（初回登録時）・`GET /credentials`・`DELETE /credentials/:id` に使う。TTL 24時間。Cookie は使わない。
+
 ### パスキー登録・認証
 
 | メソッド | パス | 説明 |
 |---------|------|------|
-| `POST` | `/registration/begin` | 登録チャレンジ生成。`{ username }` → `{ ...options, sessionId }` |
+| `POST` | `/registration/begin` | 登録チャレンジ生成。`{ username }` + `Authorization: Bearer <authToken>`（初回登録は必須。2台目以降は `registrationToken` 方式） → `{ ...options, sessionId }` |
 | `POST` | `/registration/complete` | 登録応答検証・credential 保存。`{ username, credential, sessionId }` → `{ verified: true, deviceToken }` |
 | `POST` | `/authentication/begin` | 認証チャレンジ生成（usernameless 対応）。`{ username? }` → `{ ...options, sessionId }` |
-| `POST` | `/authentication/complete` | 認証応答検証。push token あり → `{ approvalId, code }`、なし（動線 B）→ `{ verified: true }` |
+| `POST` | `/authentication/complete` | 認証応答検証。push token あり → `{ approvalId, code }`（authTokenは発行しない、後述）、なし（動線 B）→ `{ verified: true, authToken }` |
 | `GET` | `/authentication/status` | ユーザー単位の最終認証時刻ベースのポーリング（動線 B 用）。`?username=&since=` |
 
 ### push approval（AC-5）
@@ -974,12 +1020,12 @@ QRLjacking の実行難易度は高く、ユーザー名の把握・フィッシ
 
 ### パスキー管理（一覧・削除）
 
-> **注意**: 認可は `username` のみ（PoC 検証用としての意図的なトレードオフ）。本番転用時は認証成功時に発行する短命の管理トークン方式への置き換えが必須（`docs/requirements/credential-management-api.md` 参照）。
+> **注意**: 認可は `Authorization: Bearer <authToken>`（AC-0 のログインセッション）。旧: `username` クエリのみで認可していた PoC 上の IDOR トレードオフ（`docs/requirements/credential-management-api.md` に記載）は、ID/PASS ログイン導入に伴い解消した。
 
 | メソッド | パス | 説明 |
 |---------|------|------|
-| `GET` | `/credentials` | 登録済み credential 一覧を取得。`?username=` → `{ credentials: [{ id, deviceType, backedUp, transports }] }`（未登録ユーザーも 200 で空配列） |
-| `DELETE` | `/credentials/:credentialId` | credential を削除。`?username=` → `{ ok: true }`。最後の1件は 409、対象が見つからない場合は 404（ユーザー存在有無は漏らさない） |
+| `GET` | `/credentials` | ログイン中ユーザーの登録済み credential 一覧を取得。`Authorization: Bearer <authToken>` → `{ credentials: [{ id, deviceType, backedUp, transports }] }`。未ログインは 401 |
+| `DELETE` | `/credentials/:credentialId` | credential を削除。`Authorization: Bearer <authToken>` → `{ ok: true }`。最後の1件は 409、対象が見つからない場合は 404、未ログインは 401 |
 
 ### well-known
 
@@ -1088,7 +1134,9 @@ flowchart TD
 
 ## 注意事項
 
-- サーバーはインメモリストアを使用しているため、**再起動するとユーザーデータと承認状態が消えます**。再起動後は AC-1 からやり直してください。
+- サーバーはインメモリストアを使用しているため、**再起動するとユーザーデータと承認状態が消えます**。再起動後は AC-0 からやり直してください。
+- `authToken`（ID/PASS・パスキーログインのセッション）は App・Web ともにメモリ上でのみ保持し、**永続化していません**。アプリ再起動・ページリロードで再ログインが必要です（TTL自体は24時間）。
+- push approval 経由でログインした場合（`/authentication/complete` が `{ approvalId, code }` を返す分岐）は `authToken` が発行されません。認証情報の一覧・削除やパスキーの追加登録をしたい場合は、ID/PASS ログイン（AC-0）または push token 未登録状態でのパスキーログインを使ってください（理由: `/authentication/approval-status` は無認可でポーリング可能なため、ここで authToken を返すと approvalId の漏洩だけでセッションを奪取できてしまう）。
 - RPID は `.env` の `RPID`（ngrok static domain）で一元管理します。変更した場合は iOS の再ビルドが必要です。
 - Android・iOS ともに USB 接続は**初回ビルド時のみ**必要です。以降は Wi-Fi 接続のみで動作します。
 - `npx expo run:android` で再ビルドすると APK が再署名され、APK ハッシュが変わる場合があります。`app/android/app/debug.keystore` を固定して使い続けてください。

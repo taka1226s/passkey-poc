@@ -1,5 +1,5 @@
 import type { AuthenticatorTransportFuture, CredentialDeviceType } from '@simplewebauthn/server';
-import { randomUUID, randomBytes } from 'crypto';
+import { randomUUID, randomBytes, scryptSync, timingSafeEqual } from 'crypto';
 
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'expired';
 
@@ -31,6 +31,7 @@ export type UserRecord = {
   credentials: CredentialRecord[];
   lastAuthenticatedAt?: number;
   pushToken?: string;
+  passwordHash?: string;
 };
 
 export type CredentialRecord = {
@@ -46,12 +47,34 @@ const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 const DEVICE_TOKEN_TTL_MS = 15 * 60 * 1000;
 const REGISTRATION_TOKEN_TTL_MS = 5 * 60 * 1000;
 const APPROVAL_CLEANUP_DELAY_MS = 10 * 60 * 1000;
+const AUTH_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 
 const users = new Map<string, UserRecord>();
 const approvals = new Map<string, PendingApproval>();
 const challengeSessions = new Map<string, ChallengeSession>();
 const deviceTokens = new Map<string, { username: string; expiresAt: number }>();
 const registrationTokens = new Map<string, { username: string; expiresAt: number }>();
+// ID/PASS ログイン・パスキーログイン(no-push分岐)で発行するログインセッション。
+// push approval 用の PendingApproval.sessionToken とは別概念(混同を避けるため authToken と命名)
+const authSessions = new Map<string, { username: string; expiresAt: number }>();
+
+const SCRYPT_KEYLEN = 64;
+
+// パスワードハッシュ: salt:hash(共にhex) の形式。bcrypt等の新規依存を避けNode標準cryptoのscryptを使う
+function hashPassword(password: string): string {
+  const salt = randomBytes(16);
+  const hash = scryptSync(password, salt, SCRYPT_KEYLEN);
+  return `${salt.toString('hex')}:${hash.toString('hex')}`;
+}
+
+function verifyPassword(password: string, stored: string): boolean {
+  const [saltHex, hashHex] = stored.split(':');
+  if (!saltHex || !hashHex) return false;
+  const salt = Buffer.from(saltHex, 'hex');
+  const expected = Buffer.from(hashHex, 'hex');
+  const candidate = scryptSync(password, salt, SCRYPT_KEYLEN);
+  return candidate.length === expected.length && timingSafeEqual(candidate, expected);
+}
 
 // 剰余バイアスなしの一様乱数 [0, max)
 function secureRandInt(max: number): number {
@@ -288,5 +311,39 @@ export const store = {
     if (!approval) return 0;
     approval.failedAttempts++;
     return approval.failedAttempts;
+  },
+
+  // ---- ID/PASS 認証 ----
+
+  setPassword(username: string, password: string): void {
+    const user = users.get(username);
+    if (user) user.passwordHash = hashPassword(password);
+  },
+
+  verifyPassword(username: string, password: string): boolean {
+    const user = users.get(username);
+    if (!user?.passwordHash) return false;
+    return verifyPassword(password, user.passwordHash);
+  },
+
+  createAuthSession(username: string): string {
+    const token = randomBytes(32).toString('base64url');
+    authSessions.set(token, { username, expiresAt: Date.now() + AUTH_SESSION_TTL_MS });
+    return token;
+  },
+
+  // 期限切れセッションは取得時に破棄する
+  getAuthSession(token: string): string | undefined {
+    const entry = authSessions.get(token);
+    if (!entry) return undefined;
+    if (Date.now() > entry.expiresAt) {
+      authSessions.delete(token);
+      return undefined;
+    }
+    return entry.username;
+  },
+
+  deleteAuthSession(token: string): void {
+    authSessions.delete(token);
   },
 };

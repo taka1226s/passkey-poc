@@ -12,10 +12,11 @@ import { registerForPushNotifications, savePushTokenToServer } from '../utils/no
 export type Status = {
   type: 'idle' | 'success' | 'error';
   message: string;
+  authToken?: string;
 };
 
 type UsePasskeyResult = {
-  register: (username: string) => Promise<void>;
+  register: (username: string, authToken?: string) => Promise<void>;
   authenticate: (username?: string) => Promise<void>;
   loading: boolean;
   status: Status;
@@ -26,12 +27,13 @@ const IDLE: Status = { type: 'idle', message: '' };
 export async function runRegistration(
   baseUrl: string,
   username: string,
+  authToken?: string,
 ): Promise<Status> {
   let sessionId: string;
   let options: Record<string, unknown>;
 
   try {
-    const raw = await registrationBegin(baseUrl, username);
+    const raw = await registrationBegin(baseUrl, username, undefined, authToken);
     const { hints: _h, extensions: _e, sessionId: sid, ...opts } = raw as Record<string, unknown> & { sessionId: string };
     sessionId = sid;
     options = opts;
@@ -75,10 +77,16 @@ export async function runAuthentication(
   const credential = await Passkey.get(options as never);
   const result = await authenticationComplete(baseUrl, credential as never, sessionId);
   if (result.approvalId) {
+    // push-approval分岐: セキュリティ上の理由によりここではauthTokenを発行しない
+    // （詳細はdocs/design参照）。ログイン状態が必要な操作にはID/PASSログインを使う
     return { type: 'success', message: '認証完了。スマートフォンアプリで承認してください' };
   }
   if (result.verified) {
-    return { type: 'success', message: 'クロスデバイス認証が完了しました' };
+    return {
+      type: 'success',
+      message: 'クロスデバイス認証が完了しました',
+      authToken: result.authToken,
+    };
   }
   return { type: 'error', message: '認証に失敗しました' };
 }
@@ -87,11 +95,11 @@ export function usePasskey(baseUrl: string): UsePasskeyResult {
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<Status>(IDLE);
 
-  const register = async (username: string): Promise<void> => {
+  const register = async (username: string, authToken?: string): Promise<void> => {
     setLoading(true);
     setStatus(IDLE);
     try {
-      setStatus(await runRegistration(baseUrl, username));
+      setStatus(await runRegistration(baseUrl, username, authToken));
     } catch (err) {
       const message = err instanceof Error ? `登録エラー: ${err.message}` : `登録エラー: ${String(err)}`;
       setStatus({ type: 'error', message });

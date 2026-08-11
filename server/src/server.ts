@@ -34,6 +34,17 @@ function allowedOrigins(): string[] {
   return [ORIGIN_WEB, ORIGIN_LOCAL, ORIGIN_ANDROID];
 }
 
+const MIN_PASSWORD_LENGTH = 8;
+
+// ログインセッション(authToken)を Authorization: Bearer ヘッダーから解決する。
+// Cookieは使わず、Web/App共通でヘッダー方式に統一する（設計判断は docs/design 参照）。
+function requireAuthSession(req: express.Request): string | null {
+  const header = req.headers.authorization;
+  if (!header?.startsWith('Bearer ')) return null;
+  const token = header.slice('Bearer '.length);
+  return store.getAuthSession(token) ?? null;
+}
+
 export const app = express();
 app.use(cors());
 app.use(express.json());
@@ -92,6 +103,50 @@ app.get('/.well-known/assetlinks.json', (_req, res) => {
   ]);
 });
 
+// ---- ID/PASS 認証 ----
+
+app.post('/auth/signup', (req, res) => {
+  const { username, password } = req.body as { username?: string; password?: string };
+  if (!username || !password) {
+    res.status(400).json({ error: 'username、password は必須です' });
+    return;
+  }
+  if (password.length < MIN_PASSWORD_LENGTH) {
+    res.status(400).json({ error: `パスワードは${MIN_PASSWORD_LENGTH}文字以上で入力してください` });
+    return;
+  }
+  const existing = store.getUser(username);
+  if (existing?.passwordHash) {
+    res.status(409).json({ error: 'このユーザー名は既に使われています' });
+    return;
+  }
+  store.getOrCreateUser(username);
+  store.setPassword(username, password);
+  const authToken = store.createAuthSession(username);
+  res.json({ authToken });
+});
+
+app.post('/auth/login', (req, res) => {
+  const { username, password } = req.body as { username?: string; password?: string };
+  if (!username || !password) {
+    res.status(400).json({ error: 'username、password は必須です' });
+    return;
+  }
+  // ユーザー不存在とパスワード不一致を区別しない（列挙対策、A3/A4方針を踏襲）
+  if (!store.verifyPassword(username, password)) {
+    res.status(401).json({ error: 'ユーザー名またはパスワードが違います' });
+    return;
+  }
+  const authToken = store.createAuthSession(username);
+  res.json({ authToken });
+});
+
+app.post('/auth/logout', (req, res) => {
+  const { authToken } = req.body as { authToken?: string };
+  if (authToken) store.deleteAuthSession(authToken);
+  res.json({ ok: true });
+});
+
 // ---- 登録フロー ----
 
 app.post('/registration/begin', async (req, res) => {
@@ -109,6 +164,13 @@ app.post('/registration/begin', async (req, res) => {
         error: '既存のパスキーへの追加登録には再認証が必要です',
         requiresReauth: true,
       });
+      return;
+    }
+  } else {
+    // 最初のパスキー登録は ID/PASS ログインセッション必須（任意usernameでの自由登録=squatting対策）
+    const sessionUsername = requireAuthSession(req);
+    if (!sessionUsername || sessionUsername !== username) {
+      res.status(401).json({ error: 'ログインが必要です' });
       return;
     }
   }
@@ -351,8 +413,13 @@ app.post('/authentication/complete', async (req, res) => {
     const pushToken = store.getPushToken(user.username);
 
     // push token がない場合は 動線 B（直接完了）— approval は作らない
+    // WebAuthn署名検証済みのためログインセッション(authToken)を発行する。
+    // push-approval分岐(下記)では発行しない — /authentication/approval-status が
+    // 無認可でポーリング可能なため、ここでauthTokenを含めるとapprovalId漏洩だけで
+    // セッション奪取が可能になってしまう（詳細はdocs/design参照）
     if (!pushToken) {
-      res.json({ verified: true });
+      const authToken = store.createAuthSession(user.username);
+      res.json({ verified: true, authToken });
       return;
     }
 
@@ -548,16 +615,16 @@ app.get('/authentication/status', (req, res) => {
 });
 
 // ---- パスキー管理（一覧・削除） ----
-// 注意: PoC 検証用のため認可は username のみ。本番転用時はパスキー認証成功時に
-// 発行する短命の管理トークン方式への置き換えが必須（仕様書の前提・制約参照）
+// 認可は Authorization: Bearer <authToken>（ログインセッション）のみ。
+// 旧: username クエリのみで認可していたPoC上のIDORトレードオフは、
+// ID/PASSログイン導入に伴いこの機会に解消した。
 
 app.get('/credentials', (req, res) => {
-  const { username } = req.query as { username?: string };
+  const username = requireAuthSession(req);
   if (!username) {
-    res.status(400).json({ error: 'username は必須です' });
+    res.status(401).json({ error: 'ログインが必要です' });
     return;
   }
-  // 未登録ユーザーも 200 空配列（ユーザー存在有無を漏らさない — M-7 方針）
   const user = store.getUser(username);
   const credentials = (user?.credentials ?? []).map((c) => ({
     id: c.id,
@@ -570,9 +637,9 @@ app.get('/credentials', (req, res) => {
 
 app.delete('/credentials/:credentialId', (req, res) => {
   const { credentialId } = req.params;
-  const { username } = req.query as { username?: string };
+  const username = requireAuthSession(req);
   if (!username) {
-    res.status(400).json({ error: 'username は必須です' });
+    res.status(401).json({ error: 'ログインが必要です' });
     return;
   }
   const result = store.removeCredential(username, credentialId);
@@ -599,8 +666,12 @@ app.get('/', (_req, res) => {
   <style>
     body { font-family: sans-serif; max-width: 480px; margin: 60px auto; padding: 0 16px; }
     input { width: 100%; padding: 10px; font-size: 16px; margin-bottom: 12px; box-sizing: border-box; }
-    button { width: 100%; padding: 12px; font-size: 16px; background: #007AFF; color: #fff; border: none; border-radius: 8px; cursor: pointer; }
+    button { width: 100%; padding: 12px; font-size: 16px; background: #007AFF; color: #fff; border: none; border-radius: 8px; cursor: pointer; margin-bottom: 10px; }
+    button.secondary { background: #34C759; }
+    button.danger { background: #f8d7da; color: #a00; }
+    button.link { background: none; color: #007AFF; text-decoration: underline; padding: 4px; }
     button:disabled { opacity: 0.5; }
+    hr { margin: 24px 0; border: none; border-top: 1px solid #eee; }
     #status { margin-top: 20px; padding: 14px; border-radius: 8px; display: none; }
     .waiting { background: #fff3cd; }
     .approved { background: #d4edda; }
@@ -608,21 +679,50 @@ app.get('/', (_req, res) => {
     #code-box { display: none; text-align: center; margin: 16px 0; padding: 20px; background: #1a1a2e; border-radius: 12px; }
     #code-number { font-size: 64px; font-weight: bold; letter-spacing: 8px; color: #fff; font-family: monospace; }
     #code-label { font-size: 12px; color: #aaa; margin-top: 4px; }
+    #logged-in-section { display: none; }
+    .cred-item { display: flex; justify-content: space-between; align-items: center; padding: 10px; background: #f5f5f5; border-radius: 8px; margin-bottom: 8px; }
+    .cred-item span { font-family: monospace; font-size: 12px; word-break: break-all; }
+    .cred-item button { width: auto; margin: 0; padding: 6px 10px; font-size: 13px; }
   </style>
 </head>
 <body>
   <h1>Passkey PoC</h1>
-  <input id="username" placeholder="ユーザー名（任意）" />
-  <button id="btn" onclick="beginAuth()">パスキーでサインイン</button>
+
+  <div id="auth-section">
+    <h3>ログイン / 新規登録（ID/PASS）</h3>
+    <input id="auth-username" placeholder="ユーザー名" autocomplete="username" />
+    <input id="auth-password" type="password" placeholder="パスワード（8文字以上）" autocomplete="current-password" />
+    <button onclick="login()">ログイン</button>
+    <button class="secondary" onclick="signup()">新規登録</button>
+
+    <hr>
+    <h3>パスキーでサインイン（パスワードレス）</h3>
+    <input id="username" placeholder="ユーザー名（任意）" />
+    <button id="btn" onclick="beginAuth()">パスキーでサインイン</button>
+  </div>
+
+  <div id="logged-in-section">
+    <p><strong id="welcome-text"></strong></p>
+    <button class="secondary" onclick="addPasskey()">このデバイスにパスキーを追加登録</button>
+    <button class="link" onclick="logout()">ログアウト</button>
+    <hr>
+    <h3>登録済みパスキー</h3>
+    <div id="cred-list"></div>
+  </div>
+
   <div id="code-box">
     <div id="code-label">スマートフォンに表示された番号を選択してください</div>
     <div id="code-number">--</div>
   </div>
   <div id="status"></div>
+
   <script type="module">
-    import { startAuthentication } from 'https://cdn.jsdelivr.net/npm/@simplewebauthn/browser@13/esm/index.js';
+    import { startAuthentication, startRegistration } from 'https://cdn.jsdelivr.net/npm/@simplewebauthn/browser@13/esm/index.js';
 
     let pollTimer = null;
+    // authToken はページ内メモリのみで保持（リロードで消える。永続化はしない）
+    let authToken = null;
+    let authUsername = null;
 
     function setStatus(msg, cls) {
       const el = document.getElementById('status');
@@ -640,6 +740,145 @@ app.get('/', (_req, res) => {
     function hideCode() {
       document.getElementById('code-box').style.display = 'none';
     }
+
+    function render() {
+      const loggedIn = !!authToken;
+      document.getElementById('auth-section').style.display = loggedIn ? 'none' : 'block';
+      document.getElementById('logged-in-section').style.display = loggedIn ? 'block' : 'none';
+      if (loggedIn) {
+        document.getElementById('welcome-text').textContent = authUsername + ' としてログイン中';
+        loadCredentials();
+      }
+    }
+
+    function setSession(token, username) {
+      authToken = token;
+      authUsername = username;
+      render();
+    }
+
+    async function loadCredentials() {
+      const res = await fetch('/credentials', {
+        headers: { 'Authorization': 'Bearer ' + authToken },
+      });
+      if (!res.ok) return;
+      const { credentials } = await res.json();
+      const list = document.getElementById('cred-list');
+      list.innerHTML = '';
+      if (credentials.length === 0) {
+        list.innerHTML = '<p style="color:#888;font-size:14px;">まだパスキーが登録されていません</p>';
+        return;
+      }
+      for (const cred of credentials) {
+        const item = document.createElement('div');
+        item.className = 'cred-item';
+        const idShort = cred.id.slice(0, 16) + '...';
+        const label = document.createElement('span');
+        label.textContent = idShort + (cred.backedUp ? ' (同期済み)' : '');
+        item.appendChild(label);
+        const delBtn = document.createElement('button');
+        delBtn.className = 'danger';
+        delBtn.textContent = '削除';
+        delBtn.onclick = () => deleteCredential(cred.id);
+        item.appendChild(delBtn);
+        list.appendChild(item);
+      }
+    }
+
+    async function deleteCredential(credentialId) {
+      const res = await fetch('/credentials/' + encodeURIComponent(credentialId), {
+        method: 'DELETE',
+        headers: { 'Authorization': 'Bearer ' + authToken },
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setStatus('削除エラー: ' + (body.error || res.status), 'rejected');
+        return;
+      }
+      loadCredentials();
+    }
+
+    window.signup = async () => {
+      const username = document.getElementById('auth-username').value.trim();
+      const password = document.getElementById('auth-password').value;
+      try {
+        const res = await fetch('/auth/signup', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ username, password }),
+        });
+        const body = await res.json();
+        if (!res.ok) { setStatus('登録エラー: ' + body.error, 'rejected'); return; }
+        setSession(body.authToken, username);
+        setStatus('新規登録が完了しました。続けてパスキーを追加登録できます。', 'approved');
+      } catch (err) {
+        setStatus('エラー: ' + err.message, 'rejected');
+      }
+    };
+
+    window.login = async () => {
+      const username = document.getElementById('auth-username').value.trim();
+      const password = document.getElementById('auth-password').value;
+      try {
+        const res = await fetch('/auth/login', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ username, password }),
+        });
+        const body = await res.json();
+        if (!res.ok) { setStatus('ログインエラー: ' + body.error, 'rejected'); return; }
+        setSession(body.authToken, username);
+        setStatus('ログインしました。', 'approved');
+      } catch (err) {
+        setStatus('エラー: ' + err.message, 'rejected');
+      }
+    };
+
+    window.logout = async () => {
+      await fetch('/auth/logout', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ authToken }),
+      }).catch(() => {});
+      authToken = null;
+      authUsername = null;
+      render();
+      setStatus('ログアウトしました。', 'approved');
+    };
+
+    window.addPasskey = async () => {
+      try {
+        setStatus('パスキーを登録中...', 'waiting');
+        const beginRes = await fetch('/registration/begin', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + authToken,
+          },
+          body: JSON.stringify({ username: authUsername }),
+        });
+        const beginBody = await beginRes.json();
+        if (!beginRes.ok) { setStatus('登録エラー: ' + beginBody.error, 'rejected'); return; }
+
+        const { sessionId, ...optionsJSON } = beginBody;
+        const credential = await startRegistration({ optionsJSON });
+
+        const completeRes = await fetch('/registration/complete', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ username: authUsername, credential, sessionId }),
+        });
+        const completeBody = await completeRes.json();
+        if (!completeRes.ok || !completeBody.verified) {
+          setStatus('登録エラー: ' + (completeBody.error || '検証に失敗しました'), 'rejected');
+          return;
+        }
+        setStatus('パスキーを登録しました。', 'approved');
+        loadCredentials();
+      } catch (err) {
+        setStatus('エラー: ' + err.message, 'rejected');
+      }
+    };
 
     async function pollApproval(approvalId) {
       pollTimer = setInterval(async () => {
@@ -695,6 +934,11 @@ app.get('/', (_req, res) => {
         } else if (result.verified) {
           document.getElementById('btn').disabled = false;
           setStatus('認証完了（直接モード）', 'approved');
+          // no-push分岐のみ authToken が返る。push-approval分岐（result.approvalId経由）では
+          // セキュリティ上の理由により authToken を発行しない（詳細は docs/design 参照）
+          if (result.authToken) {
+            setSession(result.authToken, username || '(usernameless)');
+          }
         } else {
           document.getElementById('btn').disabled = false;
           setStatus('エラー: ' + JSON.stringify(result), 'rejected');
@@ -704,6 +948,8 @@ app.get('/', (_req, res) => {
         setStatus('エラー: ' + err.message, 'rejected');
       }
     };
+
+    render();
   </script>
 </body>
 </html>`);
