@@ -23,11 +23,13 @@ Android / iOS 実機でパスキー（FIDO2/WebAuthn）認証を検証するた�
 
 ```
 passkey-poc/
-├── app/          # React Native（Expo bare）アプリ
-├── server/       # Express + @simplewebauthn/server
+├── app/                 # React Native（Expo bare）アプリ
+├── server/              # Express + @simplewebauthn/server
 ├── scripts/
-│   └── dev.js    # ngrok 起動 & サーバー / Metro 一括起動スクリプト
-└── .env          # RPID 等の環境変数（要作成）
+│   └── dev.js           # ngrok 起動 & サーバー / Metro 一括起動スクリプト
+├── .github/workflows/   # CI・DeployGate配信・release-please（後述）
+├── docs/                # 仕様書・設計書（docs/requirements/, docs/design/）
+└── .env                 # RPID 等の環境変数（要作成）
 ```
 
 | 層 | 技術 |
@@ -970,6 +972,15 @@ QRLjacking の実行難易度は高く、ユーザー名の把握・フィッシ
 | `GET` | `/authentication/pending-approval` | push トークンで pending な承認を取得（手動起動時の補完用）。`?token=` → `{ pendingApproval: { approvalId, username } }` |
 | `POST` | `/push-token` | アプリの Expo Push Token をユーザーに紐付け（deviceToken 必須）。`{ username, token, deviceToken }` |
 
+### パスキー管理（一覧・削除）
+
+> **注意**: 認可は `username` のみ（PoC 検証用としての意図的なトレードオフ）。本番転用時は認証成功時に発行する短命の管理トークン方式への置き換えが必須（`docs/requirements/credential-management-api.md` 参照）。
+
+| メソッド | パス | 説明 |
+|---------|------|------|
+| `GET` | `/credentials` | 登録済み credential 一覧を取得。`?username=` → `{ credentials: [{ id, deviceType, backedUp, transports }] }`（未登録ユーザーも 200 で空配列） |
+| `DELETE` | `/credentials/:credentialId` | credential を削除。`?username=` → `{ ok: true }`。最後の1件は 409、対象が見つからない場合は 404（ユーザー存在有無は漏らさない） |
+
 ### well-known
 
 | メソッド | パス | 説明 |
@@ -991,6 +1002,87 @@ pending ──┬── approve ──→ approved
           ├── reject  ──→ rejected
           └── 5分経過 ──→ expired
 ```
+
+---
+
+## CI/CD（DeployGate 配信）
+
+Android アプリを [DeployGate](https://deploygate.com/) 経由でテスターへ配信する GitHub Actions + fastlane のパイプライン。参考実装: [taka1226s/cicd](https://github.com/taka1226s/cicd)（private）。詳細な仕様・設計は `docs/requirements/deploygate-android-cicd.md` / `docs/design/deploygate-android-cicd.md` を参照。
+
+### 全体フロー
+
+```mermaid
+flowchart TD
+    subgraph Trigger["トリガー"]
+        A1["push / PR to main"]
+        A2["workflow_dispatch<br/>（手動実行）"]
+    end
+
+    subgraph CI["CI（ci.yml）"]
+        B1["server test"]
+        B2["app test"]
+        B3["android-build<br/>（assembleDebug 検証）"]
+    end
+
+    subgraph ReleaseAuto["release-please.yml"]
+        E1["release-please job"]
+        E2["Release PR<br/>（バージョン番号 + CHANGELOG案）"]
+        E3["タグ + GitHub Release 作成"]
+        E1 -->|作成 / 更新| E2
+        E2 -->|マージ| E3
+        E1 -->|release_created=true| F1["deploy-android job"]
+    end
+
+    subgraph ManualDeploy["deploy-android-deploygate.yml"]
+        C1["deploy job"]
+    end
+
+    subgraph Reusable["_deploy-android-deploygate.yml<br/>（workflow_call 専用・単独起動不可）"]
+        R1["app/.env 生成<br/>（EXPO_PUBLIC_API_URL）"]
+        R2["google-services.json 生成"]
+        R3["assembleRelease"]
+        R4["DeployGate へアップロード"]
+        R1 --> R2 --> R3 --> R4
+    end
+
+    A1 --> B1
+    A1 --> B2
+    A1 --> B3
+    A1 --> E1
+    A2 --> C1
+    C1 -->|uses:| Reusable
+    F1 -->|uses:| Reusable
+```
+
+### 配信トリガー
+
+| 経路 | トリガー | 内容 |
+|------|---------|------|
+| 手動配信 | Actions タブから「Deploy Android to DeployGate」を実行 | 選択したブランチの Android Release APK を即座に DeployGate へアップロード |
+| 自動配信 | release-please が作成した Release PR を `main` へマージ | タグ・GitHub Release 作成 → 同一ワークフロー内で自動的に DeployGate へ配信 |
+
+コミット毎の配信は行わない（手動実行またはリリース作成時のみ）。`_deploy-android-deploygate.yml` は `workflow_call` 専用で単独起動できないため、この2経路以外から配信は発生しない。
+
+### バージョン管理（release-please）
+
+`main` への push で `feat:` / `fix:` 等の [Conventional Commits](https://www.conventionalcommits.org/) を解析し、Release PR（`app/package.json` のバージョン番号案・`CHANGELOG.md`）を自動作成/更新する。対象コミットが無ければ Release PR は作成されない。Release PR をマージするとタグ・GitHub Release が作成され、自動配信が走る。
+
+### 必要な Secrets / Variables
+
+| 種別 | 名前 | 用途 | 登録場所 |
+|------|------|------|---------|
+| Secret | `DEPLOYGATE_API_TOKEN` | DeployGate API トークン | Environment `deploygate` |
+| Secret | `DEPLOYGATE_USER` | DeployGate オーナー名 | Environment `deploygate` |
+| Secret | `GOOGLE_SERVICES_JSON` | Firebase 設定（`app/android/app/google-services.json` の中身。git 管理外のため CI に別途渡す必要がある） | リポジトリ Secret |
+| Variable | `EXPO_PUBLIC_API_URL` | 配信ビルドに焼き込む開発サーバーの URL（ngrok 静的ドメイン等）。未設定でビルドすると `config.ts` の既定値 `http://localhost:3000` が焼き込まれ、実機から疎通できなくなる | Environment `deploygate` |
+
+`deploygate` Environment は Settings → Environments で作成し、上記 Secrets/Variables を登録する。加えて Settings → Actions → General → Workflow permissions で「Allow GitHub Actions to create and approve pull requests」を有効化する必要がある（release-please が Release PR を作成するための前提）。
+
+### 既知の制約
+
+- **iOS は DeployGate 配信の対象外**: `app/ios` は `.gitignore` で除外されており（Expo prebuild で都度生成する運用）、CI チェックアウト時に存在しないため iOS のビルド検証・配信は行えない
+- 配信ビルドの署名は **debug 鍵を暫定利用**（`app/android/app/debug.keystore` を流用）。社内配布用途であり Play Store への配布はできない
+- `EXPO_PUBLIC_API_URL` は固定値のため、ngrok の静的ドメインが変わった場合は `gh variable set EXPO_PUBLIC_API_URL --repo <repo> --env deploygate` で更新し、手動配信ワークフローを再実行する必要がある
 
 ---
 
