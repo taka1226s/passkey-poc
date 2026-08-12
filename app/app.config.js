@@ -13,7 +13,11 @@ module.exports = {
   },
   android: {
     ...staticConfig.android,
-    permissions: ['android.permission.POST_NOTIFICATIONS'],
+    // staticConfig.android.permissions（CAMERA等）を丸ごと上書きしないよう追加でマージする
+    permissions: [
+      ...(staticConfig.android.permissions ?? []),
+      'android.permission.POST_NOTIFICATIONS',
+    ],
   },
   ios: {
     ...staticConfig.ios,
