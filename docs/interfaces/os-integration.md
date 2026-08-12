@@ -96,4 +96,5 @@ sequenceDiagram
 ## 関連ドキュメント
 
 - サーバーインタフェース: [server-api.md](./server-api.md)
+- WebAuthn インタフェース項目: [webauthn-fields.md](./webauthn-fields.md)
 - README の「アーキテクチャ」「コンポーネント詳解」「RPID と権限検証」セクション

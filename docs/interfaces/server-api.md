@@ -184,5 +184,6 @@ pending ──┬── approve ──→ approved
 ## 関連ドキュメント
 
 - OS とのインタフェース: [os-integration.md](./os-integration.md)
+- WebAuthn インタフェース項目: [webauthn-fields.md](./webauthn-fields.md)
 - README の「API リファレンス」「認証フロー」セクション（シーケンス図つき）
 - `docs/design/credential-management-api.md`, `docs/design/deploygate-android-cicd.md`
