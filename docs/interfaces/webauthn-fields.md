@@ -265,7 +265,52 @@ sequenceDiagram
 
 **設計上のポイント**: ③④⑤は登録時と同一の照合ロジックを共有する（`expectedChallenge`/`expectedOrigin`/`expectedRPID`という同じ枠組み）。登録時との違いは、①②（credential所有者の特定・usernameバインディング）と⑥⑦（公開鍵署名検証・カウンタ巻き戻り検出）が認証時特有の照合であること。⑥はライブラリ内部で行われるためサーバーコード上には現れないが、`credential: { publicKey: storedCred.publicKey, ... }` として**サーバー側の信頼済み値を明示的に渡している**ことが実質的な担保になっている。
 
-## 9. `RegistrationResponseJSON` / `AuthenticationResponseJSON` のフィールドアクセス方針
+## 9. usernameless 認証の仕組み
+
+`authentication/begin` で `username` を省略した場合に、サーバーがユーザーを一切知らない状態からどう本人特定するかを、これまでの各セクションの部品を組み合わせて説明する。
+
+```mermaid
+sequenceDiagram
+    participant App as アプリ / Web
+    participant OS as OS（Credential Manager<br/>/ AuthenticationServices）
+    participant Server as Express サーバー
+    participant DB as ユーザーストア
+
+    Note over App,Server: 前提: 登録時に residentKey: 'required' で<br/>resident key（ディスカバラブルクレデンシャル）として保存済み
+
+    App->>Server: POST /authentication/begin { }（username省略）
+    Server->>Server: allowCredentials = []（空配列）
+    Server-->>App: { challenge, rpID, allowCredentials: [], sessionId }
+
+    App->>OS: Passkey.get(options)
+    Note over OS: allowCredentials が空なので<br/>このrpID向けに保存された resident key を<br/>OS側が自力で列挙してユーザーに選ばせる
+    OS-->>App: AuthenticationResponseJSON<br/>{ id, response: { ... } }
+
+    App->>Server: POST /authentication/complete { credential, sessionId }
+    Server->>DB: getUserByCredentialId(credential.id)<br/>（ユーザーストア全体を線形探索）
+    DB-->>Server: 該当ユーザー
+    Note over Server: userHandle は使わず<br/>credential.id の逆引きだけで本人特定
+    Server-->>App: 認証完了
+```
+
+### 成立条件と各ステップの対応
+
+| ステップ | 条件・処理 | 対応するセクション |
+|---|---|---|
+| ① 登録時にresident key必須化 | `authenticatorSelection.residentKey: 'required'`。これにより「誰の・どのRP向けの鍵か」を**OS/authenticator自身が記憶**するcredentialになる（通常のcredentialはRP側がIDを覚えて都度提示する必要がある） | [1. 登録オプション生成](#1-登録オプション生成generateregistrationoptions) |
+| ② `allowCredentials` を空にする | `username` 未指定 → `user` が見つからない → `allowCredentials: []` | [4. 認証オプション生成](#4-認証オプション生成generateauthenticationoptions) |
+| ③ OSが自力でcredentialを列挙 | `allowCredentials` が空だと、OSは特定のcredential IDに絞らず、そのrpID向けに保存された全resident keyからユーザーに選ばせる（Android Credential Manager / iOS のアカウント選択UI） | [os-integration.md](./os-integration.md) |
+| ④ credential.idのみで本人特定 | サーバーはusernameを一切受け取っていないが、レスポンスの `credential.id` を `getUserByCredentialId()` で全ユーザー走査し逆引きする | [8. 照合関係（認証時）の照合①](#8-照合関係認証時) |
+
+### 補足: `userHandle` は使っていない
+
+WebAuthn仕様では、認証レスポンスの `response.userHandle`（登録時に指定した `user.id`）を使ってユーザーを特定するのが一般的なパターンだが、このプロジェクトのサーバーコードには `userHandle` への参照が一切なく、**`credential.id` の総当たり逆引き（`store.ts` の `getUserByCredentialId`、Map全走査の線形探索）のみ**でユーザーを特定している。ユーザー数が増えると探索コストが線形に増加する点は、インメモリストアを使う本 PoC の規模では問題にならないが、本番相当のデータ量では `credential.id` → `username` の逆引きインデックスを別途持つ設計に切り替える必要がある。
+
+### usernameless と通常認証（username指定あり）の挙動差
+
+[8. 照合関係（認証時）](#8-照合関係認証時)の照合②（`session.username` とcredential所有者の一致確認）は、`username` を指定した場合のみ働く。usernameless時は `session.username` が存在しないため、この照合はスキップされる（＝サーバーは「credentialの持ち主が誰であるか」だけを信頼し、「呼び出し側が期待していた特定のusernameと一致するか」までは確認しない）。これは意図的な設計であり、usernameless認証の目的（クライアント側がusernameを知らない状態で始める）と整合する。
+
+## 10. `RegistrationResponseJSON` / `AuthenticationResponseJSON` のフィールドアクセス方針
 
 サーバー・アプリのいずれも、**レスポンスオブジェクト全体を検証ライブラリ（またはOS API）に丸ごと渡す**方針で、個別フィールド（`rawId`, `response.attestationObject`, `response.clientDataJSON`, `response.authenticatorData`, `response.signature`, `response.userHandle` 等）を明示的に取り出すことはしていない。例外的に個別アクセスしている箇所は以下のみ：
 
