@@ -80,7 +80,113 @@
 | Web UI（`GET /` のインラインJS） | `authentication/begin` が返した `allowCredentials[].transports` を、実際の保存値に関係なく**一律 `['hybrid']` に強制上書き**してから `startAuthentication()` に渡す（`server.ts:919-922`）。クロスデバイス（QRコード経由）でのサインインを常に選ばせるための意図的な上書き |
 | アプリ（`usePasskey.ts` / `webauthnClient.ts`） | このような上書きは行わない。サーバーから返された `allowCredentials` をそのまま `Passkey.get()` に渡す |
 
-## 6. `RegistrationResponseJSON` / `AuthenticationResponseJSON` のフィールドアクセス方針
+## 6. 照合関係（登録時）
+
+「誰が・いつ発行した値」と「誰が・いつ検証する値」の対応関係をシーケンス図で示す。
+
+```mermaid
+sequenceDiagram
+    participant App as アプリ / Web
+    participant OS as OS（Credential Manager<br/>/ AuthenticationServices）
+    participant Server as Express サーバー
+    participant Store as ChallengeSession<br/>（インメモリ）
+
+    App->>Server: POST /registration/begin { username }
+    Server->>Server: challenge 生成
+    Server->>Store: 保存 { challenge, username, expiresAt }
+    Server-->>App: { challenge, rpID, user, sessionId }
+
+    App->>OS: Passkey.create(options)
+    Note over OS: challenge・rpID・origin を<br/>clientDataJSON / attestationObject に埋め込み署名
+    OS-->>App: RegistrationResponseJSON<br/>{ id, response: { clientDataJSON, attestationObject, transports } }
+
+    App->>Server: POST /registration/complete<br/>{ username, credential, sessionId }
+    Server->>Store: getChallengeSession(sessionId)
+
+    rect rgb(255, 245, 220)
+        Note over Server: 照合① session.username === body.username<br/>不一致ならセッション破棄・400
+        Note over Server: 照合② clientDataJSON.challenge === session.challenge（expectedChallenge）
+        Note over Server: 照合③ clientDataJSON.origin ∈ allowedOrigins()（expectedOrigin）
+        Note over Server: 照合④ attestationObject.rpIdHash === sha256(RPID)（expectedRPID）
+    end
+
+    alt すべて一致
+        Server->>Server: credential 保存<br/>{ id, publicKey, counter, deviceType, backedUp, transports }
+        Server-->>App: { verified: true, deviceToken }
+    else いずれか不一致
+        Server-->>App: 400 エラー
+    end
+```
+
+| # | 照合対象A（クライアント発行/埋め込み） | 照合対象B（サーバー側の期待値） | 検証箇所 | 不一致時 |
+|---|---|---|---|---|
+| ① | body の `username` | `ChallengeSession.username`（`begin`時に保存） | `server.ts`（`complete`冒頭） | セッション即破棄・400（M4対策） |
+| ② | `clientDataJSON.challenge` | `session.challenge`（`expectedChallenge`） | `verifyRegistrationResponse` 内部 | 400 |
+| ③ | `clientDataJSON.origin` | `allowedOrigins()`（`expectedOrigin`、Web/localhost/Androidネイティブの複数許可） | 同上 | 400 |
+| ④ | `attestationObject` の `rpIdHash` | `sha256(RPID)`（`expectedRPID`） | 同上 | 400 |
+
+## 7. 照合関係（認証時）
+
+```mermaid
+sequenceDiagram
+    participant App as アプリ / Web
+    participant OS as OS（Credential Manager<br/>/ AuthenticationServices）
+    participant Server as Express サーバー
+    participant DB as ユーザーストア<br/>（インメモリ）
+
+    App->>Server: POST /authentication/begin { username? }
+    Server->>DB: getUser(username)（あれば）
+    Server->>Server: challenge 生成
+    Note over Server: allowCredentials = ユーザーの credentials<br/>（未指定/未登録なら空配列＝usernameless）
+    Server-->>App: { challenge, rpID, allowCredentials, sessionId }
+
+    App->>OS: Passkey.get(options)
+    Note over OS: allowCredentials の中から秘密鍵を検索し<br/>challenge・rpID・origin に署名
+    OS-->>App: AuthenticationResponseJSON<br/>{ id, response: { clientDataJSON, authenticatorData, signature, userHandle } }
+
+    App->>Server: POST /authentication/complete<br/>{ credential, sessionId }
+    Server->>Server: getChallengeSession(sessionId)
+
+    rect rgb(220, 235, 255)
+        Note over Server,DB: 照合① credential.id → getUserByCredentialId でユーザー逆引き
+        Note over Server: 照合② session.username（あれば） === 逆引きしたユーザーの username
+    end
+
+    Server->>DB: storedCred = user.credentials.find(id 一致)
+
+    rect rgb(255, 245, 220)
+        Note over Server: 照合③ clientDataJSON.challenge === session.challenge（expectedChallenge）
+        Note over Server: 照合④ clientDataJSON.origin ∈ allowedOrigins()（expectedOrigin）
+        Note over Server: 照合⑤ authenticatorData の rpIdHash === sha256(RPID)（expectedRPID）
+        Note over Server: 照合⑥ signature を storedCred.publicKey で検証
+        Note over Server: 照合⑦ newCounter > storedCred.counter（巻き戻り検出）
+    end
+
+    alt すべて一致
+        Server->>DB: counter 更新・lastAuthenticatedAt 記録
+        alt push token 未登録
+            Server-->>App: { verified: true, authToken }
+        else push token 登録済み
+            Server-->>App: { approvalId, code }
+        end
+    else いずれか不一致
+        Server-->>App: 400 / 404 エラー
+    end
+```
+
+| # | 照合対象A | 照合対象B | 検証箇所 | 不一致時 |
+|---|---|---|---|---|
+| ① | `credential.id` | ユーザーストア全体を走査（`getUserByCredentialId`） | `server.ts`（`complete`冒頭） | 404（credential不存在） |
+| ② | `session.username`（`begin`でusername指定時のみ存在） | ①で逆引きしたユーザーの `username` | 同上 | 400（M3対策：usernameless認証を悪用したなりすまし防止） |
+| ③ | `clientDataJSON.challenge` | `session.challenge`（`expectedChallenge`） | `verifyAuthenticationResponse` 内部 | 400 |
+| ④ | `clientDataJSON.origin` | `allowedOrigins()`（`expectedOrigin`） | 同上 | 400 |
+| ⑤ | `authenticatorData` の `rpIdHash` | `sha256(RPID)`（`expectedRPID`） | 同上 | 400 |
+| ⑥ | `signature` | `storedCred.publicKey`（**サーバーが保持する値**。クライアント申告の公開鍵は使わない） | 同上 | 400 |
+| ⑦ | `newCounter`（検証後の新カウンタ値） | `storedCred.counter`（保存済みの旧カウンタ値） | `server.ts`（A6対策） | `newCounter <= storedCred.counter` なら400（クローン攻撃疑い） |
+
+**設計上のポイント**: ③④⑤は登録時と同一の照合ロジックを共有する（`expectedChallenge`/`expectedOrigin`/`expectedRPID`という同じ枠組み）。登録時との違いは、①②（credential所有者の特定・usernameバインディング）と⑥⑦（公開鍵署名検証・カウンタ巻き戻り検出）が認証時特有の照合であること。⑥はライブラリ内部で行われるためサーバーコード上には現れないが、`credential: { publicKey: storedCred.publicKey, ... }` として**サーバー側の信頼済み値を明示的に渡している**ことが実質的な担保になっている。
+
+## 8. `RegistrationResponseJSON` / `AuthenticationResponseJSON` のフィールドアクセス方針
 
 サーバー・アプリのいずれも、**レスポンスオブジェクト全体を検証ライブラリ（またはOS API）に丸ごと渡す**方針で、個別フィールド（`rawId`, `response.attestationObject`, `response.clientDataJSON`, `response.authenticatorData`, `response.signature`, `response.userHandle` 等）を明示的に取り出すことはしていない。例外的に個別アクセスしている箇所は以下のみ：
 
